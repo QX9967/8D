@@ -155,9 +155,9 @@ Every supplied image name must appear exactly once in its own D-stage list.
 """
 SYSTEM_PROMPT += """
 
-For d4, return occurrence_why_rows (at most 5 rows) and escape_why_rows (at most 3 rows).
-Each row is an object with level, problem, cause, and whys (a list). occurrence rows need up to 5 why values; escape rows need up to 3.
-These values are used to fill the two D4 5WHY tables. Do not invent unsupported reasons; use an empty string for unsupported cells.
+For d4, return occurrence_why_rows with exactly five ordered rows (Why1 to Why5), and escape_why_rows with exactly three ordered rows (Why1 to Why3).
+Every row must contain level, problem and cause. `cause` is the answer/reason for that Why level, never a rewording of the question. The first `problem` is the original fault; later rows' `problem` should be the previous row's cause, so the chain is continuous.
+The PPT has three columns: level, problem and cause. Put the answer in `cause`, not only in the `whys` list. Do not make up unsupported facts: if a level genuinely has no evidence, leave that row's cause empty.
 """
 
 
@@ -215,6 +215,13 @@ def put_cell(table: Any, row: int, col: int, value: Any) -> None:
             set_run_font(run)
 
 
+def first_table(slide: Any) -> Any:
+    table_shape = next((shape for shape in slide.shapes if shape.has_table), None)
+    if table_shape is None:
+        raise ValueError("模板页面未找到可填写的原生表格。")
+    return table_shape
+
+
 def replace_tokens(shape: Any, replacements: dict[str, Any]) -> None:
     if not shape.has_text_frame:
         return
@@ -225,6 +232,13 @@ def replace_tokens(shape: Any, replacements: dict[str, Any]) -> None:
     if updated != original:
         shape.text = updated
         shape.name = "AI_DYNAMIC"
+
+
+def set_paragraph_text(paragraph: Any, value: Any) -> None:
+    """Replace a paragraph while retaining a deterministic Chinese font setting."""
+    paragraph.text = "" if value in (None, "", "待确认") else str(value).strip()
+    for run in paragraph.runs:
+        set_run_font(run)
 
 
 def add_text(slide: Any, value: str, left: float, top: float, width: float, height: float, size: int = 10) -> None:
@@ -358,12 +372,23 @@ def fill_template(template: Path, output: Path, data: dict[str, Any], materials:
 
     cover, d0, d1, d2 = data["cover"], data["d0"], data["d1"], data["d2"]
     slide = presentation.slides[0]
-    replace_tokens(slide.shapes[0], {"{{Content}}": cover["title"]})
-    # Cover has four identical tokens; fill by paragraph to preserve the labels.
-    labels = [cover["prepared_by"], cover["reviewed_by"], cover["approved_by"], cover["date"]]
-    for index, paragraph in enumerate(slide.shapes[1].text_frame.paragraphs):
-        if index < len(labels) and "{{Content}}" in paragraph.text:
-            paragraph.text = paragraph.text.replace("{{Content}}", text(labels[index]))
+    # The title still supports {{Content}}, while cover approvals can also be ordinary
+    # labels such as "编制：" after a customer has customized the template.
+    for shape in slide.shapes:
+        replace_tokens(shape, {"{{Content}}": cover.get("title", "")})
+        if not shape.has_text_frame:
+            continue
+        label_values = (("编制", cover.get("prepared_by")), ("审核", cover.get("reviewed_by")),
+                        ("批准", cover.get("approved_by")), ("日期", cover.get("date")))
+        for paragraph in shape.text_frame.paragraphs:
+            source = paragraph.text.replace(" ", "")
+            for label, value in label_values:
+                if label in source:
+                    display = "" if value in (None, "", "待确认") else str(value).strip()
+                    separator = "：" if "：" in paragraph.text or ":" not in paragraph.text else ":"
+                    set_paragraph_text(paragraph, f"{label}{separator}{display}")
+                    shape.name = "AI_DYNAMIC"
+                    break
 
     slide = presentation.slides[2]
     d0_lines = [d0["fault_date"], d0["model"], d0["trace_code"], d0["station"], d0["description"]]
@@ -371,7 +396,7 @@ def fill_template(template: Path, output: Path, data: dict[str, Any], materials:
         if index < len(d0_lines) and "{{Content}}" in paragraph.text:
             paragraph.text = paragraph.text.replace("{{Content}}", text(d0_lines[index]))
 
-    team_shape = presentation.slides[3].shapes[1]
+    team_shape = first_table(presentation.slides[3])
     expand_team_table(team_shape, len(d1.get("team", [])), presentation.slide_height)
     team_table = team_shape.table
     for row, member in enumerate(d1.get("team", []), start=1):
@@ -379,7 +404,7 @@ def fill_template(template: Path, output: Path, data: dict[str, Any], materials:
         for col, key in enumerate(("name", "role", "duty", "contact", "module"), start=1):
             put_cell(team_table, row, col, member.get(key))
 
-    d2_table = presentation.slides[4].shapes[1].table
+    d2_table = first_table(presentation.slides[4]).table
     d2_map = {
         (0, 1): d2["customer"], (0, 3): d2["date"], (0, 5): d2["supplier"],
         (1, 1): d2["model"], (1, 3): d2["vehicle_model"], (1, 5): d2["material"],
@@ -390,7 +415,7 @@ def fill_template(template: Path, output: Path, data: dict[str, Any], materials:
     for (row, col), value in d2_map.items():
         put_cell(d2_table, row, col, value)
 
-    d3_table = presentation.slides[5].shapes[1].table
+    d3_table = first_table(presentation.slides[5]).table
     by_category = {text(item.get("category")): item for item in data["d3"].get("actions", [])}
     for row in range(1, 8):
         category = d3_table.cell(row, 1).text.strip()
@@ -400,24 +425,33 @@ def fill_template(template: Path, output: Path, data: dict[str, Any], materials:
 
     # Fill the two D4 5WHY tables from model-generated occurrence and escape reason chains.
     d4 = data.get("d4", {})
-    d4["occurrence_why_rows"] = d4.get("occurrence_why_rows", [])
-    d4["escape_why_rows"] = d4.get("escape_why_rows", [])
-    occurrence_table = presentation.slides[7].shapes[1].table
-    for row_index, item in enumerate(d4["occurrence_why_rows"][:len(occurrence_table.rows) - 1], start=1):
-        put_cell(occurrence_table, row_index, 0, item.get("level"))
-        put_cell(occurrence_table, row_index, 1, item.get("problem"))
-        put_cell(occurrence_table, row_index, 2, item.get("cause"))
-        for why_index, value in enumerate(item.get("whys", [])[:5], start=3):
-            put_cell(occurrence_table, row_index, why_index, value)
-    escape_table = presentation.slides[8].shapes[1].table
-    for row_index, item in enumerate(d4["escape_why_rows"][:len(escape_table.rows) - 1], start=1):
-        put_cell(escape_table, row_index, 0, item.get("level"))
-        put_cell(escape_table, row_index, 1, item.get("problem"))
-        put_cell(escape_table, row_index, 2, item.get("cause"))
-        for why_index, value in enumerate(item.get("whys", [])[:3], start=3):
-            put_cell(escape_table, row_index, why_index, value)
+    def reason_chain(kind: str) -> list[tuple[str, str]]:
+        """Return the problem-and-cause pair for every individual WHY row."""
+        direct = d4.get(f"{kind}_why", {})
+        problem = str(direct.get("problem", "")).strip()
+        values = [str(value).strip() for value in direct.get("whys", []) if str(value or "").strip()]
+        rows = d4.get(f"{kind}_why_rows", [])
+        if rows:
+            return [
+                (str(row.get("problem", "")).strip(), str(row.get("cause", "")).strip())
+                for row in rows
+            ]
+        if not values:
+            values = [str(item.get("answer", "")).strip() for item in d4.get("five_whys", []) if str(item.get("answer", "")).strip()]
+        return [(problem if index == 0 else "", value) for index, value in enumerate(values)]
 
-    d5_table = presentation.slides[9].shapes[1].table
+    occurrence_table = first_table(presentation.slides[7]).table
+    occurrence_rows = reason_chain("occurrence")
+    for row_index, (problem, cause) in enumerate(occurrence_rows[:len(occurrence_table.rows) - 1], start=1):
+        put_cell(occurrence_table, row_index, 1, problem)
+        put_cell(occurrence_table, row_index, 2, cause)
+    escape_table = first_table(presentation.slides[8]).table
+    escape_rows = reason_chain("escape")
+    for row_index, (problem, cause) in enumerate(escape_rows[:len(escape_table.rows) - 1], start=1):
+        put_cell(escape_table, row_index, 1, problem)
+        put_cell(escape_table, row_index, 2, cause)
+
+    d5_table = first_table(presentation.slides[9]).table
     d5_lines = [f"{index + 1}. {text(x.get('action'))}（{text(x.get('owner'))}，{text(x.get('date'))}，{text(x.get('status'))}）" for index, x in enumerate(data["d5"].get("countermeasures", []))]
     put_cell(d5_table, 1, 0, "1")
     put_cell(d5_table, 1, 1, "\n".join(d5_lines))
@@ -425,7 +459,7 @@ def fill_template(template: Path, output: Path, data: dict[str, Any], materials:
     put_cell(d5_table, 1, 3, "待确认")
     put_cell(d5_table, 1, 4, "待确认")
 
-    d6_table = presentation.slides[10].shapes[1].table
+    d6_table = first_table(presentation.slides[10]).table
     d6_lines = [f"{index + 1}. {text(x.get('method'))}" for index, x in enumerate(data["d6"].get("validations", []))]
     result_lines = [f"{index + 1}. {text(x.get('result'))}" for index, x in enumerate(data["d6"].get("validations", []))]
     put_cell(d6_table, 1, 0, "1")
@@ -434,12 +468,16 @@ def fill_template(template: Path, output: Path, data: dict[str, Any], materials:
     put_cell(d6_table, 1, 3, "待确认")
     put_cell(d6_table, 1, 4, "待确认")
 
-    d7_table = presentation.slides[11].shapes[1].table
+    d7_table = first_table(presentation.slides[11]).table
     prevention_map = {text(item.get("item")): item for item in data["d7"].get("preventions", [])}
     for row in range(1, len(d7_table.rows)):
         item = prevention_map.get(d7_table.cell(row, 0).text.strip(), {})
         for col, key in ((1, "yes_no"), (2, "comment"), (3, "owner"), (4, "date"), (5, "status")):
-            put_cell(d7_table, row, col, item.get(key, "待确认"))
+            # Do not touch unmatched or empty cells: this preserves the customer's
+            # original row heights, widths, borders and default formatting.
+            value = item.get(key) if item else ""
+            if value not in (None, "", "待确认"):
+                put_cell(d7_table, row, col, value)
 
     replace_tokens(presentation.slides[12].shapes[1], {"{{Content}}": data["d8"].get("conclusion")})
 
