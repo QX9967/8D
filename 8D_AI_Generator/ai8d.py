@@ -153,6 +153,12 @@ Each page must contain title, summary, layout (single, two, three or four), and 
 Use single for screenshots, comparison images, or images that require inspection individually. Only group images that show one same activity.
 Every supplied image name must appear exactly once in its own D-stage list.
 """
+SYSTEM_PROMPT += """
+
+For d4, return occurrence_why_rows (at most 5 rows) and escape_why_rows (at most 3 rows).
+Each row is an object with level, problem, cause, and whys (a list). occurrence rows need up to 5 why values; escape rows need up to 3.
+These values are used to fill the two D4 5WHY tables. Do not invent unsupported reasons; use an empty string for unsupported cells.
+"""
 
 
 def parse_json(text: str) -> dict[str, Any]:
@@ -392,7 +398,24 @@ def fill_template(template: Path, output: Path, data: dict[str, Any], materials:
         for col, key in ((2, "action"), (3, "owner"), (4, "date"), (5, "status")):
             put_cell(d3_table, row, col, item.get(key, "待确认"))
 
-    # The D4 5WHY tables are maintained by the quality team and deliberately left blank.
+    # Fill the two D4 5WHY tables from model-generated occurrence and escape reason chains.
+    d4 = data.get("d4", {})
+    d4["occurrence_why_rows"] = d4.get("occurrence_why_rows", [])
+    d4["escape_why_rows"] = d4.get("escape_why_rows", [])
+    occurrence_table = presentation.slides[7].shapes[1].table
+    for row_index, item in enumerate(d4["occurrence_why_rows"][:len(occurrence_table.rows) - 1], start=1):
+        put_cell(occurrence_table, row_index, 0, item.get("level"))
+        put_cell(occurrence_table, row_index, 1, item.get("problem"))
+        put_cell(occurrence_table, row_index, 2, item.get("cause"))
+        for why_index, value in enumerate(item.get("whys", [])[:5], start=3):
+            put_cell(occurrence_table, row_index, why_index, value)
+    escape_table = presentation.slides[8].shapes[1].table
+    for row_index, item in enumerate(d4["escape_why_rows"][:len(escape_table.rows) - 1], start=1):
+        put_cell(escape_table, row_index, 0, item.get("level"))
+        put_cell(escape_table, row_index, 1, item.get("problem"))
+        put_cell(escape_table, row_index, 2, item.get("cause"))
+        for why_index, value in enumerate(item.get("whys", [])[:3], start=3):
+            put_cell(escape_table, row_index, why_index, value)
 
     d5_table = presentation.slides[9].shapes[1].table
     d5_lines = [f"{index + 1}. {text(x.get('action'))}（{text(x.get('owner'))}，{text(x.get('date'))}，{text(x.get('status'))}）" for index, x in enumerate(data["d5"].get("countermeasures", []))]
