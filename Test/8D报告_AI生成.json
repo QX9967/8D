@@ -1,0 +1,409 @@
+{
+  "cover": {
+    "title": "MRS118A流媒体后视镜螺丝用错8D报告",
+    "prepared_by": "于春悦/成彩榕",
+    "reviewed_by": "李自坤",
+    "approved_by": "叶慧棠",
+    "date": "2026年4月"
+  },
+  "d0": {
+    "fault_date": "2026年4月10日",
+    "model": "MRS118A",
+    "trace_code": "588JUAABEP260318#MRS118A#0041",
+    "station": "仪表线体",
+    "description": "流媒体后视镜螺丝用错*7例，螺丝长度比OK品长",
+    "summary": "客户投诉7例流媒体后视镜螺丝用错，NG品螺丝长度大于OK品",
+    "evidence_summary": "游标卡尺测量NG品螺丝长度10.90mm，OK品螺丝长度13.14mm；NG品与OK品实物对比，NG品螺丝明显突出过长；118B/118A物料编码对照表证实两种机型螺丝规格存在差异"
+  },
+  "d1": {
+    "team": [
+      {
+        "name": "于春悦/成彩榕",
+        "role": "小组组长",
+        "duty": "项目经理",
+        "contact": "[邮箱]",
+        "module": "主导策划"
+      },
+      {
+        "name": "李自坤",
+        "role": "组员",
+        "duty": "生技工程师",
+        "contact": "[邮箱]",
+        "module": "过程故障分析"
+      },
+      {
+        "name": "叶慧棠",
+        "role": "组员",
+        "duty": "结构工程师",
+        "contact": "[邮箱]",
+        "module": "故障件分析"
+      },
+      {
+        "name": "叶小军",
+        "role": "组员",
+        "duty": "生技工程师",
+        "contact": "[邮箱]",
+        "module": "生产支持"
+      }
+    ],
+    "summary": "成立由项目经理、生技工程师、结构工程师组成的4人8D团队",
+    "evidence_summary": ""
+  },
+  "d2": {
+    "customer": "长城",
+    "date": "2026年4月10日",
+    "supplier": "惠州华阳通用电子有限公司",
+    "model": "MRS118A",
+    "vehicle_model": "DE09",
+    "material": "流媒体后视镜总成",
+    "quantity": "7",
+    "failure_type": "零公里",
+    "lot": "588JUAABEP260318#MRS118A#0041",
+    "location": "天津长城",
+    "production_date": "2026/3/18",
+    "vin": "NA",
+    "complaint_source": "2026-4-10，流媒体后视镜螺丝用错，螺丝长度比OK品长",
+    "symptom": "流媒体后视镜螺丝用错，螺丝长度比OK品长",
+    "confirmed_symptom": "流媒体后视镜螺丝用错，螺丝长度比OK品长",
+    "summary": "零公里投诉7件，确认故障为流媒体后视镜使用螺丝长度偏长",
+    "evidence_summary": "NG品与OK品实物对比图，NG品螺丝明显外露过长"
+  },
+  "d3": {
+    "actions": [
+      {
+        "category": "客户方",
+        "action": "螺丝长度比OK品长，正常使用",
+        "owner": "长城",
+        "date": "2026/4/10",
+        "status": "已完成"
+      },
+      {
+        "category": "在途",
+        "action": "无",
+        "owner": "成彩榕",
+        "date": "2026/4/10",
+        "status": "已完成"
+      },
+      {
+        "category": "中转仓",
+        "action": "拧螺丝杆和底座相平，如螺丝头外露3圈为OK，大于3圈为NG",
+        "owner": "陈祝",
+        "date": "持续检查",
+        "status": "已完成"
+      },
+      {
+        "category": "公司",
+        "action": "无",
+        "owner": "成彩榕",
+        "date": "2026/4/10",
+        "status": "已完成"
+      },
+      {
+        "category": "物料",
+        "action": "无",
+        "owner": "成彩榕",
+        "date": "2026/4/10",
+        "status": "已完成"
+      },
+      {
+        "category": "在制品",
+        "action": "无",
+        "owner": "成彩榕",
+        "date": "2026/4/10",
+        "status": "已完成"
+      },
+      {
+        "category": "其它",
+        "action": "无",
+        "owner": "成彩榕",
+        "date": "2026/4/10",
+        "status": "已完成"
+      }
+    ],
+    "summary": "客户判定可正常使用，中转仓按外露圈数3圈标准持续检查",
+    "evidence_summary": "NG品与OK品螺丝外露对比照，可观察到NG品螺丝明显长于OK品"
+  },
+  "d4": {
+    "five_whys": [
+      {
+        "why": "为什么出现螺丝用错",
+        "answer": "待确认"
+      },
+      {
+        "why": "为什么两种机型螺丝混淆",
+        "answer": "待确认"
+      },
+      {
+        "why": "为什么线边物料未按机型分区存放",
+        "answer": "待确认"
+      },
+      {
+        "why": "为什么未发现异常物料",
+        "answer": "待确认"
+      },
+      {
+        "why": "为什么缺少防错验证",
+        "answer": "待确认"
+      }
+    ],
+    "root_cause": "待确认",
+    "escape_cause": "待确认",
+    "summary": "通过生产条码追溯、工艺流程、首件确认表、库存记录等多维度开展原因分析，待结合现场验证得出最终结论",
+    "evidence_summary": "生产追溯条码显示工序全为PASS；装配工艺流程图明确QJG02装锁线束工序为首道装配工序；MRS118A首件确认表与MRS118B首件确认表均显示螺丝规格M4.6*11及121100007400物料编号要求；线边两种规格螺丝实物共存；WMS库存显示121100007500分布于不同批次；结构仓管工作指引要求按定置定位摆放；螺丝包装袋实物贴有物料标签"
+  },
+  "d5": {
+    "countermeasures": [
+      {
+        "action": "线边仓管理：按机型定置定位摆放，不同机型螺丝分开放置",
+        "owner": "待确认",
+        "date": "待确认",
+        "status": "待确认"
+      },
+      {
+        "action": "SOP作业指导书更新：明确MRS118A用M4.6*11螺丝规格",
+        "owner": "待确认",
+        "date": "待确认",
+        "status": "待确认"
+      },
+      {
+        "action": "自动锁螺丝机参数设置：按机型设定取样数值与判断上下限",
+        "owner": "待确认",
+        "date": "待确认",
+        "status": "待确认"
+      },
+      {
+        "action": "MRS118A/MRS118B螺丝区分培训",
+        "owner": "待确认",
+        "date": "待确认",
+        "status": "待确认"
+      },
+      {
+        "action": "控制计划更新：螺丝规格与拧紧力矩4.0±0.5Kg fcm纳入PFMEA",
+        "owner": "待确认",
+        "date": "待确认",
+        "status": "待确认"
+      }
+    ],
+    "summary": "通过线边管理、SOP更新、自动锁螺丝机参数、培训与控制计划多维度落实长期对策",
+    "evidence_summary": "MRS118A/MRS118B螺丝区分培训签到表；线边仓管理工作指引；M6*20自动锁螺丝机实物及参数设置界面；NG与OK状态报警对比；MRS118A标准作业指导书明确M4.6螺丝规格；潜在失效模式与控制计划表；MRS118B装配流程图明确电批力矩及高度检具要求；MRS118A控制计划明确螺丝规格M2.6*5/M4.6*13"
+  },
+  "d6": {
+    "validations": [
+      {
+        "method": "待确认",
+        "result": "待确认",
+        "owner": "待确认",
+        "date": "待确认"
+      }
+    ],
+    "summary": "待确认",
+    "evidence_summary": ""
+  },
+  "d7": {
+    "preventions": [
+      {
+        "item": "待确认",
+        "yes_no": "待确认",
+        "comment": "待确认",
+        "owner": "待确认",
+        "date": "待确认",
+        "status": "待确认"
+      }
+    ],
+    "summary": "待确认",
+    "evidence_summary": ""
+  },
+  "d8": {
+    "conclusion": "待确认",
+    "summary": "通过员工违纪处理通知书、责任人员处理及系统物料绑定实施防止再发",
+    "evidence_summary": "B级违纪处理通知书，责任人已签收确认；MRS-FA镜杆螺丝锁付工序物料绑定状态由无绑定修改为有绑定"
+  },
+  "image_pages": {
+    "d2": [
+      {
+        "title": "NG与OK实物对比",
+        "summary": "流媒体后视镜NG品螺丝明显长于OK品",
+        "layout": "single",
+        "images": [
+          "image029.png"
+        ]
+      }
+    ],
+    "d4": [
+      {
+        "title": "生产追溯",
+        "summary": "追溯条码全工序PASS",
+        "layout": "single",
+        "images": [
+          "image034.png"
+        ]
+      },
+      {
+        "title": "装配工艺流程",
+        "summary": "明确装配工序步骤",
+        "layout": "single",
+        "images": [
+          "image038.png"
+        ]
+      },
+      {
+        "title": "MRS118A首件确认表",
+        "summary": "明确M4.6*11螺丝及121100007400物料",
+        "layout": "single",
+        "images": [
+          "image067.png"
+        ]
+      },
+      {
+        "title": "线边两种规格螺丝",
+        "summary": "线边存放MRS118A与MRS118B两种规格螺丝",
+        "layout": "single",
+        "images": [
+          "image068.png"
+        ]
+      },
+      {
+        "title": "MRS118B首件确认表",
+        "summary": "明确M4.6*13螺丝及121100007500物料",
+        "layout": "single",
+        "images": [
+          "image069.png"
+        ]
+      },
+      {
+        "title": "WMS库存查询",
+        "summary": "121100007500库存分布于不同批次",
+        "layout": "single",
+        "images": [
+          "image075.png"
+        ]
+      },
+      {
+        "title": "仓管工作指引",
+        "summary": "明确按定置定位摆放物料",
+        "layout": "single",
+        "images": [
+          "image076.png"
+        ]
+      },
+      {
+        "title": "螺丝包装标签",
+        "summary": "螺丝包装袋贴物料标签",
+        "layout": "single",
+        "images": [
+          "image077.png"
+        ]
+      }
+    ],
+    "d5": [
+      {
+        "title": "螺丝区分培训签到",
+        "summary": "MRS118A/MRS118B螺丝区分培训",
+        "layout": "single",
+        "images": [
+          "image084.png"
+        ]
+      },
+      {
+        "title": "线边仓管理工作指引",
+        "summary": "明确剩余物料处理及物料放置",
+        "layout": "single",
+        "images": [
+          "image085.png"
+        ]
+      },
+      {
+        "title": "自动锁螺丝机",
+        "summary": "M6*20自动锁螺丝机实物",
+        "layout": "single",
+        "images": [
+          "image088.png"
+        ]
+      },
+      {
+        "title": "自动锁螺丝机参数界面",
+        "summary": "取样数值与判断上下限参数设置",
+        "layout": "single",
+        "images": [
+          "image089.png"
+        ]
+      },
+      {
+        "title": "NG状态报警",
+        "summary": "NG状态报警显示",
+        "layout": "single",
+        "images": [
+          "image093.png"
+        ]
+      },
+      {
+        "title": "OK状态报警",
+        "summary": "OK状态报警显示",
+        "layout": "single",
+        "images": [
+          "image094.png"
+        ]
+      },
+      {
+        "title": "MRS118A标准作业指导书",
+        "summary": "明确M4.6螺丝规格",
+        "layout": "single",
+        "images": [
+          "image095.png"
+        ]
+      },
+      {
+        "title": "潜在失效模式",
+        "summary": "MRS118A潜在失效模式分析",
+        "layout": "single",
+        "images": [
+          "image102.png"
+        ]
+      },
+      {
+        "title": "MRS118B装配流程",
+        "summary": "明确电批力矩及高度检具要求",
+        "layout": "single",
+        "images": [
+          "image103.png"
+        ]
+      },
+      {
+        "title": "MRS118A控制计划",
+        "summary": "明确M2.6*5/M4.6*13螺丝规格",
+        "layout": "single",
+        "images": [
+          "image104.png"
+        ]
+      }
+    ],
+    "d6": [],
+    "d7": [],
+    "d8": [
+      {
+        "title": "员工违纪处理通知书",
+        "summary": "B级违纪处理责任人已签收",
+        "layout": "single",
+        "images": [
+          "image105.png"
+        ]
+      },
+      {
+        "title": "物料绑定状态-无绑定",
+        "summary": "镜杆螺丝锁付工序物料未绑定",
+        "layout": "single",
+        "images": [
+          "image109.png"
+        ]
+      },
+      {
+        "title": "物料绑定状态-有绑定",
+        "summary": "镜杆螺丝锁付工序物料已绑定",
+        "layout": "single",
+        "images": [
+          "image110.png"
+        ]
+      }
+    ]
+  }
+}
