@@ -100,12 +100,47 @@ def bundled_template() -> Path:
     return base / "8D模板.pptx"
 
 
+def clear_folders(path: Path) -> int:
+    """Remove all files inside D0-D8 folders under *path*."""
+    removed = 0
+    for entry in path.iterdir():
+        if not entry.is_dir():
+            continue
+        name = entry.name.lower()
+        if not any(name.startswith(f"d{i}") or name.startswith(f"{i:02}") for i in range(9)):
+            continue
+        for item in entry.iterdir():
+            if item.is_file():
+                item.unlink()
+                removed += 1
+        print(f"  已清空: {entry.name}")
+    return removed
+
+
 def pause(message: str = "\nPress Enter to close...") -> None:
     if getattr(sys, "frozen", False):
         try:
             input(message)
         except EOFError:
             pass
+
+
+def interactive_menu() -> int:
+    print("=" * 40)
+    print("  Adayo 8D AI 报告生成器")
+    print("  1. 生成 8D PPT 报告")
+    print("  2. 清空 D0-D8 材料文件夹")
+    print("  q. 退出")
+    print("=" * 40)
+    choice = input("请选择 (1/2/q): ").strip().lower()
+    if choice == "1":
+        return 1
+    if choice == "2":
+        return 2
+    if choice == "q":
+        return 0
+    print("无效选项，请输入 1、2 或 q。")
+    return interactive_menu()
 
 
 def image_part(path: Path) -> dict[str, Any]:
@@ -127,13 +162,13 @@ SYSTEM_PROMPT = r"""
 你是汽车电子质量 8D 报告助手。基于用户给出的分组文字和现场证据图片，输出单个 JSON 对象，不要 Markdown，不要解释。
 
 原则：
-1. 不得编造日期、数据、责任人、验证结果、根因或措施。
+1. 不得编造日期、数据或责任人；但应基于文字记录和图片证据完成合理的原因链、长期对策、验证方式和结案总结。没有明确日期或责任人时留空，不能用“待确认”代替内容。
 2. 图片只能支持可直接观察到的现象；不能凭图片断言真实根因。
 3. 使用正式、简洁的中文。每项最多两句。team 最多 6 人；countermeasures、validations 各最多 5 项。
 4. evidence_summary 是每个阶段图片想证明的简短说明（不含图片文件名），没有图片则为空字符串。
 
 填写要求（关键）：
-- D0 问题了解：fault_date / model / trace_code / station / description 全部留空字符串，后续由 K3 系统或人工补录。
+- D0 问题了解：根据材料填写 fault_date / model / trace_code / station / description；材料没有明确说明的字段留空，不要写“待确认”。
 - D1 团队成立：team 列表里每人按 name / role / duty / contact / module 输出，但 role 字段保持模板给定角色（组长 / 组员），不要改写。
 - D2 故障描述：customer / date / supplier / model / vehicle_model / material / quantity / failure_type / lot / location / production_date / vin / complaint_source / symptom / confirmed_symptom 全部留空字符串。
 - D3 临时措施：actions 列表留空（不要生成任何条目），summary 写"待确认"。
@@ -141,7 +176,7 @@ SYSTEM_PROMPT = r"""
 - D5 长期对策：按 action / owner / date / status 输出最多 5 条；status 默认"进行中"。
 - D6 效果验证：按 method / result / owner / date 输出。
 - D7 预防措施：preventions 留空（不在此处生成），summary 写"按 D5 长期对策自动生成"。
-- D8 结案总结：conclusion 必须 4–8 句，覆盖问题概述、根因、长期措施、预防措施推广、横向展开与持续改进，字数不少于 250 字。
+- D8 结案总结：返回 background / current_status / system_strategy / strategy_logic 四个字段，分别对应模板的四个 {{content}} 占位符；每项使用 1–3 句，覆盖问题概述、根因、长期措施、预防措施推广、横向展开与持续改进。另返回 conclusion，全文不少于 250 字。
 
 输出键必须齐全，按以下 JSON 结构：
 {
@@ -154,7 +189,7 @@ SYSTEM_PROMPT = r"""
  "d5":{"countermeasures":[{"action":"","owner":"","date":"","status":""}],"summary":"","evidence_summary":""},
  "d6":{"validations":[{"method":"","result":"","owner":"","date":""}],"summary":"","evidence_summary":""},
  "d7":{"preventions":[],"summary":"按 D5 长期对策自动生成","evidence_summary":""},
- "d8":{"conclusion":"","summary":"","evidence_summary":""}
+ "d8":{"background":"","current_status":"","system_strategy":"","strategy_logic":"","conclusion":"","summary":"","evidence_summary":""}
 }
 """.strip()
 SYSTEM_PROMPT += """
@@ -190,18 +225,47 @@ def parse_json(text: str) -> dict[str, Any]:
         return repaired
 
 
+def missing_required_content(data: dict[str, Any]) -> list[str]:
+    """Return report sections that would otherwise render as empty placeholder tables."""
+    d4 = data.get("d4", {})
+    occurrence = d4.get("occurrence_why_rows", [])
+    escape = d4.get("escape_why_rows", [])
+    missing: list[str] = []
+    if len(occurrence) < 5 or any(not str(row.get("cause") or "").strip() for row in occurrence[:5]):
+        missing.append("D4发生原因5WHY（5行原因）")
+    if len(escape) < 3 or any(not str(row.get("cause") or "").strip() for row in escape[:3]):
+        missing.append("D4流出原因5WHY（3行原因）")
+    if not usable_records(data.get("d5", {}).get("countermeasures", []), "action"):
+        missing.append("D5长期对策")
+    if not usable_records(data.get("d6", {}).get("validations", []), "method"):
+        missing.append("D6效果验证")
+    conclusion = str(data.get("d8", {}).get("conclusion") or "").strip()
+    d8 = data.get("d8", {})
+    d8_fields = ("background", "current_status", "system_strategy", "strategy_logic")
+    if len(re.sub(r"\s+", "", conclusion)) < 250 or any(not str(d8.get(key) or "").strip() for key in d8_fields):
+        missing.append("D8结案总结（不少于250字）")
+    return missing
+
+
 def generate_content(materials: dict[str, dict[str, Any]], api_key: str) -> dict[str, Any]:
     client = OpenAI(base_url=BASE_URL, api_key=api_key)
-    response = client.chat.completions.create(
-        model=MODEL,
-        temperature=0.1,
-        messages=[
-            {"role": "system", "content": SYSTEM_PROMPT},
-            {"role": "user", "content": build_prompt(materials)},
-        ],
-    )
-    text = response.choices[0].message.content or ""
-    return parse_json(text)
+    messages = [
+        {"role": "system", "content": SYSTEM_PROMPT},
+        {"role": "user", "content": build_prompt(materials)},
+    ]
+    for attempt in range(2):
+        response = client.chat.completions.create(model=MODEL, temperature=0.1, messages=messages)
+        raw = response.choices[0].message.content or ""
+        data = parse_json(raw)
+        missing = missing_required_content(data)
+        if not missing:
+            return data
+        if attempt == 0:
+            messages.extend([
+                {"role": "assistant", "content": raw},
+                {"role": "user", "content": "上一版 JSON 以下必填内容为空或不合格：" + "、".join(missing) + "。请仅依据已有材料补全，输出完整 JSON；不要输出待确认、空数组或空字符串。"},
+            ])
+    raise ValueError("AI 返回内容不完整：" + "、".join(missing) + "。请补充材料后重试。")
 
 
 def text(value: Any) -> str:
@@ -244,6 +308,32 @@ def replace_tokens(shape: Any, replacements: dict[str, Any]) -> None:
     if updated != original:
         shape.text = updated
         shape.name = "AI_DYNAMIC"
+
+
+def replace_content_placeholders(slide: Any, values: list[Any]) -> None:
+    """Fill {{content}} paragraphs in their template order.
+
+    A designer may put several placeholders in one text box, so a shape is not
+    necessarily a single value slot.
+    """
+    placeholders = [
+        (shape, paragraph)
+        for shape in slide.shapes if shape.has_text_frame
+        for paragraph in shape.text_frame.paragraphs
+        if "{{content}}" in paragraph.text
+    ]
+    if len(placeholders) != len(values):
+        raise ValueError(f"模板页 {{content}} 数量为 {len(placeholders)}，但程序需要填写 {len(values)} 项。")
+    for (shape, paragraph), value in zip(placeholders, values):
+        # Keep labels and signatures that share the paragraph with the marker
+        # (for example, "编制：{{content}}").  An empty model value removes
+        # only the marker and intentionally leaves the surrounding template
+        # text intact.
+        replacement = "" if value is None else str(value).strip()
+        paragraph.text = paragraph.text.replace("{{content}}", replacement)
+        shape.name = "AI_DYNAMIC"
+        for run in paragraph.runs:
+            set_run_font(run)
 
 
 def set_paragraph_text(paragraph: Any, value: Any) -> None:
@@ -399,11 +489,27 @@ def group_prefix(name: str) -> str | None:
 
 
 def plan_image_pages(images: list[Path], plans: list[dict[str, Any]], default_summary: str) -> list[dict[str, Any]]:
-    """Honor model grouping, then auto-group by N- prefix, then leave leftovers alone."""
+    """Force N-M image groups onto one page, then honor the remaining model plan."""
     by_name = {image.name: image for image in images}
     used: set[str] = set()
     result: list[dict[str, Any]] = []
     maximum = {"single": 1, "two": 2, "three": 3, "four": 4}
+
+    # A user-provided N-M name is an explicit pagination instruction.  Do this
+    # before reading the model plan so a model's "single" layout cannot split
+    # 1-1 and 1-2 across slides.
+    prefix_buckets: dict[str, list[Path]] = {}
+    for image in images:
+        prefix = group_prefix(image.name)
+        if prefix is not None:
+            prefix_buckets.setdefault(prefix, []).append(image)
+    for prefix in sorted(prefix_buckets, key=lambda value: int(value)):
+        bucket = prefix_buckets[prefix]
+        if len(bucket) > 4:
+            raise ValueError(f"图片组 {prefix}- 包含 {len(bucket)} 张图片；每页最多支持 4 张。")
+        used.update(image.name for image in bucket)
+        result.append({"images": bucket, "title": "证据材料", "summary": default_summary})
+
     for plan in plans:
         layout = str(plan.get("layout", "single")).lower()
         selected = [by_name[name] for name in plan.get("images", []) if name in by_name and name not in used]
@@ -415,27 +521,24 @@ def plan_image_pages(images: list[Path], plans: list[dict[str, Any]], default_su
             used.update(image.name for image in group)
             result.append({"images": group, "title": text(plan.get("title")), "summary": text(plan.get("summary") or default_summary)})
 
-    # Auto-group remaining images that share an "N-" numeric prefix (e.g. 1-1, 1-2, 2-1).
-    prefix_buckets: dict[str, list[Path]] = {}
-    for image in images:
-        if image.name in used:
-            continue
-        prefix = group_prefix(image.name)
-        if prefix is None:
-            continue
-        prefix_buckets.setdefault(prefix, []).append(image)
-    for prefix in sorted(prefix_buckets.keys(), key=lambda value: int(value)):
-        bucket = prefix_buckets[prefix]
-        if not bucket:
-            continue
-        used.update(image.name for image in bucket)
-        result.append({"images": bucket, "title": "证据材料", "summary": default_summary})
-
     for image in images:
         if image.name not in used:
             result.append({"images": [image], "title": "证据材料", "summary": default_summary})
 
     return result
+
+
+def clear_d4_example_artwork(slide: Any) -> None:
+    """Remove the sample pictures and captions shipped on D4 evidence pages."""
+    for shape in list(slide.shapes):
+        caption = shape.text if shape.has_text_frame else ""
+        if shape.shape_type == 13 or "示例图" in caption or "小结：" in caption:
+            remove_shape(shape)
+
+
+def usable_records(records: list[dict[str, Any]], required_field: str) -> list[dict[str, Any]]:
+    """Discard blank/model-placeholder records instead of printing fake table data."""
+    return [item for item in records if str(item.get(required_field) or "").strip() not in ("", "待确认", "NA")]
 
 
 def insert_evidence_pages(presentation: Presentation, source_index: int, stage: str, pages: list[dict[str, Any]], before_source: bool = False, images: list[Path] | None = None) -> None:
@@ -475,6 +578,10 @@ def fill_template(template: Path, output: Path, data: dict[str, Any], materials:
 
     cover, d1 = data["cover"], data["d1"]
     slide = presentation.slides[0]
+    replace_content_placeholders(slide, [
+        cover.get("prepared_by"), cover.get("reviewed_by"),
+        cover.get("approved_by"), cover.get("date"),
+    ])
     # The title still supports {{Content}}, while cover approvals can also be ordinary
     # labels such as "编制：" after a customer has customized the template.
     for shape in slide.shapes:
@@ -493,8 +600,12 @@ def fill_template(template: Path, output: Path, data: dict[str, Any], materials:
                     shape.name = "AI_DYNAMIC"
                     break
 
-    # D0 问题了解：模板的 5 行占位符全部保持空白，后续由 K3 或人工填写。
-    # 故意不写 slide 2 的任何内容。
+    # D0 问题了解：按模板中五个 {{content}} 直接写入 AI 返回字段。
+    d0 = data.get("d0", {})
+    replace_content_placeholders(presentation.slides[2], [
+        d0.get("fault_date"), d0.get("model"), d0.get("trace_code"),
+        d0.get("station"), d0.get("description"),
+    ])
 
     # D1 团队成立：保留模板的"序号 / 角色"列，其他列由 AI 填入。
     team_shape = first_table(presentation.slides[3])
@@ -528,37 +639,53 @@ def fill_template(template: Path, output: Path, data: dict[str, Any], materials:
             values = [str(item.get("answer", "")).strip() for item in d4.get("five_whys", []) if str(item.get("answer", "")).strip()]
         return [(problem if index == 0 else "", value) for index, value in enumerate(values)]
 
-    occurrence_table = first_table(presentation.slides[8]).table
+    occurrence_table = first_table(presentation.slides[7]).table
+    for row_index in range(1, len(occurrence_table.rows)):
+        put_cell(occurrence_table, row_index, 1, "")
+        put_cell(occurrence_table, row_index, 2, "")
     occurrence_rows = reason_chain("occurrence")
     for row_index, (problem, cause) in enumerate(occurrence_rows[:len(occurrence_table.rows) - 1], start=1):
         put_cell(occurrence_table, row_index, 1, problem)
         put_cell(occurrence_table, row_index, 2, cause)
-    escape_table = first_table(presentation.slides[9]).table
+    escape_table = first_table(presentation.slides[8]).table
+    for row_index in range(1, len(escape_table.rows)):
+        put_cell(escape_table, row_index, 1, "")
+        put_cell(escape_table, row_index, 2, "")
     escape_rows = reason_chain("escape")
     for row_index, (problem, cause) in enumerate(escape_rows[:len(escape_table.rows) - 1], start=1):
         put_cell(escape_table, row_index, 1, problem)
         put_cell(escape_table, row_index, 2, cause)
 
-    d5_table = first_table(presentation.slides[10]).table
-    d5_countermeasures = data["d5"].get("countermeasures", [])
-    d5_lines = [f"{index + 1}. {text(x.get('action'))}（{text(x.get('owner'))}，{text(x.get('date'))}，{text(x.get('status'))}）" for index, x in enumerate(d5_countermeasures)]
-    put_cell(d5_table, 1, 0, "1")
-    put_cell(d5_table, 1, 1, "\n".join(d5_lines))
-    put_cell(d5_table, 1, 2, "待确认")
-    put_cell(d5_table, 1, 3, "待确认")
-    put_cell(d5_table, 1, 4, "待确认")
+    d5_shape = first_table(presentation.slides[9])
+    d5_countermeasures = usable_records(data["d5"].get("countermeasures", []), "action")
+    expand_team_table(d5_shape, len(d5_countermeasures), presentation.slide_height)
+    d5_table = d5_shape.table
+    for row_index in range(1, len(d5_table.rows)):
+        for col_index in range(len(d5_table.columns)):
+            put_cell(d5_table, row_index, col_index, "")
+    for row_index, item in enumerate(d5_countermeasures, start=1):
+        put_cell(d5_table, row_index, 0, row_index)
+        put_cell(d5_table, row_index, 1, item.get("action"))
+        put_cell(d5_table, row_index, 2, item.get("owner"))
+        put_cell(d5_table, row_index, 3, item.get("date"))
+        put_cell(d5_table, row_index, 4, item.get("status") or "进行中")
 
-    d6_table = first_table(presentation.slides[11]).table
-    d6_lines = [f"{index + 1}. {text(x.get('method'))}" for index, x in enumerate(data["d6"].get("validations", []))]
-    result_lines = [f"{index + 1}. {text(x.get('result'))}" for index, x in enumerate(data["d6"].get("validations", []))]
-    put_cell(d6_table, 1, 0, "1")
-    put_cell(d6_table, 1, 1, "\n".join(d6_lines))
-    put_cell(d6_table, 1, 2, "\n".join(result_lines))
-    put_cell(d6_table, 1, 3, "待确认")
-    put_cell(d6_table, 1, 4, "待确认")
+    d6_shape = first_table(presentation.slides[10])
+    validations = usable_records(data["d6"].get("validations", []), "method")
+    expand_team_table(d6_shape, len(validations), presentation.slide_height)
+    d6_table = d6_shape.table
+    for row_index in range(1, len(d6_table.rows)):
+        for col_index in range(len(d6_table.columns)):
+            put_cell(d6_table, row_index, col_index, "")
+    for row_index, item in enumerate(validations, start=1):
+        put_cell(d6_table, row_index, 0, row_index)
+        put_cell(d6_table, row_index, 1, item.get("method"))
+        put_cell(d6_table, row_index, 2, item.get("result"))
+        put_cell(d6_table, row_index, 3, item.get("owner"))
+        put_cell(d6_table, row_index, 4, item.get("date"))
 
     # D7 预防措施：基于 D5 长期对策推断每一项是否触发。
-    d7_table = first_table(presentation.slides[12]).table
+    d7_table = first_table(presentation.slides[11]).table
     if d5_countermeasures:
         inference = match_prevention_to_d5(d5_countermeasures)
     else:
@@ -569,23 +696,23 @@ def fill_template(template: Path, output: Path, data: dict[str, Any], materials:
         put_cell(d7_table, row, 2, comment)
         # owner / date / status 留空待人工填写。
 
-    # D8 结案总结：模板的 D8 文本框不再包含 {{Content}}，改为追加一个独立的结案段。
-    d8_slide = presentation.slides[13]
-    d8_conclusion = str(data["d8"].get("conclusion") or "").strip()
-    if d8_conclusion:
-        d8_box = d8_slide.shapes.add_textbox(Inches(0.55), Inches(2.4), Inches(8.9), Inches(2.5))
-        d8_box.name = "AI_DYNAMIC"
-        frame = d8_box.text_frame
-        frame.word_wrap = True
-        first = True
-        for line in d8_conclusion.split("\n"):
-            paragraph = frame.paragraphs[0] if first else frame.add_paragraph()
-            first = False
-            set_paragraph_text(paragraph, line)
-            paragraph.alignment = PP_ALIGN.LEFT
+    # D8 结案总结：四个独立 {{content}} 直接对应 AI 的四个结案字段。
+    d8 = data.get("d8", {})
+    d8_values = [
+        d8.get("background"), d8.get("current_status"),
+        d8.get("system_strategy"), d8.get("strategy_logic"),
+    ]
+    # Backward compatibility for saved drafts created before the four-field
+    # D8 template: preserve the model's conclusion instead of silently
+    # dropping it when the new fields are absent.
+    if not any(str(value or "").strip() for value in d8_values):
+        d8_values[0] = d8.get("conclusion")
+    replace_content_placeholders(presentation.slides[12], [
+        *d8_values,
+    ])
 
     # Insert stage evidence immediately after its own slide. Descending order keeps source indexes stable.
-    stage_sources = (("D8 结案总结", "d8", 13), ("D7 预防措施", "d7", 12), ("D6 效果验证", "d6", 11), ("D5 长期对策", "d5", 10), ("D4 原因分析", "d4", 6), ("D2 问题描述", "d2", 4))
+    stage_sources = (("D8 结案总结", "d8", 12), ("D7 预防措施", "d7", 11), ("D6 效果验证", "d6", 10), ("D5 长期对策", "d5", 9), ("D4 原因分析", "d4", 6), ("D2 问题描述", "d2", 4))
     page_data = data.get("image_pages", {})
     for stage, key, source_index in stage_sources:
         images = materials[stage]["images"]
@@ -604,16 +731,35 @@ def main() -> int:
     parser.add_argument("--output", type=Path, help="输出 .pptx；省略时写入 EXE 同级目录")
     parser.add_argument("--reset-key", action="store_true", help="删除凭据管理器中保存的 API Key")
     parser.add_argument("--draft-json", type=Path, help="跳过模型调用，使用已有 JSON 草稿生成 PPT")
+    parser.add_argument("--clear", action="store_true", help="直接清空当前目录下 D0-D8 文件夹中的文件")
     args = parser.parse_args()
-    auto_mode = not any((args.template, args.materials, args.output, args.draft_json, args.reset_key))
+    auto_mode = not any((args.template, args.materials, args.output, args.draft_json, args.reset_key, args.clear))
     try:
         if args.reset_key:
             get_api_key(reset=True)
             print("旧密钥已清除，新密钥已保存。")
             return 0
 
+        if args.clear:
+            root = executable_folder()
+            n = clear_folders(root)
+            print(f"已清空 {n} 个文件。")
+            pause()
+            return 0
+
         # Double-click mode: the EXE is placed directly in the material folder.
         if auto_mode:
+            while True:
+                choice = interactive_menu()
+                if choice == 0:
+                    return 0
+                if choice == 2:
+                    n = clear_folders(executable_folder())
+                    print(f"已清空 {n} 个文件。")
+                    pause()
+                    return 0
+                # choice == 1: generate PPT
+                break
             args.template = bundled_template()
             args.materials = executable_folder()
             args.output = executable_folder() / "8D报告_AI生成.pptx"
@@ -635,6 +781,9 @@ def main() -> int:
         if args.draft_json:
             print("[2/4] 正在读取本地 AI 草稿...")
             data = json.loads(args.draft_json.read_text(encoding="utf-8"))
+            missing = missing_required_content(data)
+            if missing:
+                raise ValueError("本地 AI 草稿内容不完整：" + "、".join(missing) + "。请重新调用 AI 生成，不会再输出待确认占位表格。")
         else:
             print("[2/4] 正在上传图片并由 MiniMax 生成 8D 内容；图片较多时此步骤需要等待...")
             data = generate_content(materials, get_api_key())

@@ -1,1 +1,20 @@
 8D报告/
+
+# Local deployment and test artifacts
+/Test/Adayo8D-AI.exe
+/Test/8D报告_AI生成.json
+/Test/8D报告_AI生成.pptx
+/Test/template-adaptation-check.pptx
+/Test/D0 */
+/Test/D1 */
+/Test/D2 */
+/Test/D3 */
+/Test/D4 */
+/Test/D5 */
+/Test/D6 */
+/Test/D7 */
+/Test/D8 */
+
+# Exported HTML report and its supporting folder
+*.htm
+*.files/

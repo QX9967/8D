@@ -1,6 +1,9 @@
 __pycache__/
 build/
 dist/
+.build_venv/
+build_fixed/
+dist_fixed/
 *.spec
 out/
 *.json
