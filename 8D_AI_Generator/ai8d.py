@@ -127,22 +127,33 @@ SYSTEM_PROMPT = r"""
 你是汽车电子质量 8D 报告助手。基于用户给出的分组文字和现场证据图片，输出单个 JSON 对象，不要 Markdown，不要解释。
 
 原则：
-1. 不得编造日期、数据、责任人、验证结果、根因或措施。没有证据的值写“待确认”。
+1. 不得编造日期、数据、责任人、验证结果、根因或措施。
 2. 图片只能支持可直接观察到的现象；不能凭图片断言真实根因。
-3. 使用正式、简洁的中文。每项最多两句。team 最多 6 人；actions 最多 7 项；countermeasures、validations 各最多 5 项。
-4. evidence_summary 是每个阶段图片想证明的简短说明；没有图片则为空字符串。
+3. 使用正式、简洁的中文。每项最多两句。team 最多 6 人；countermeasures、validations 各最多 5 项。
+4. evidence_summary 是每个阶段图片想证明的简短说明（不含图片文件名），没有图片则为空字符串。
 
-按以下 JSON 结构输出，所有键必须存在：
+填写要求（关键）：
+- D0 问题了解：fault_date / model / trace_code / station / description 全部留空字符串，后续由 K3 系统或人工补录。
+- D1 团队成立：team 列表里每人按 name / role / duty / contact / module 输出，但 role 字段保持模板给定角色（组长 / 组员），不要改写。
+- D2 故障描述：customer / date / supplier / model / vehicle_model / material / quantity / failure_type / lot / location / production_date / vin / complaint_source / symptom / confirmed_symptom 全部留空字符串。
+- D3 临时措施：actions 列表留空（不要生成任何条目），summary 写"待确认"。
+- D4 原因分析：仍按 occurrence_why_rows（五行 Why1–Why5）和 escape_why_rows（三行 Why1–Why3）输出，每行含 level / problem / cause。
+- D5 长期对策：按 action / owner / date / status 输出最多 5 条；status 默认"进行中"。
+- D6 效果验证：按 method / result / owner / date 输出。
+- D7 预防措施：preventions 留空（不在此处生成），summary 写"按 D5 长期对策自动生成"。
+- D8 结案总结：conclusion 必须 4–8 句，覆盖问题概述、根因、长期措施、预防措施推广、横向展开与持续改进，字数不少于 250 字。
+
+输出键必须齐全，按以下 JSON 结构：
 {
  "cover":{"title":"","prepared_by":"","reviewed_by":"","approved_by":"","date":""},
  "d0":{"fault_date":"","model":"","trace_code":"","station":"","description":"","summary":"","evidence_summary":""},
  "d1":{"team":[{"name":"","role":"","duty":"","contact":"","module":""}],"summary":"","evidence_summary":""},
  "d2":{"customer":"","date":"","supplier":"","model":"","vehicle_model":"","material":"","quantity":"","failure_type":"","lot":"","location":"","production_date":"","vin":"","complaint_source":"","symptom":"","confirmed_symptom":"","summary":"","evidence_summary":""},
- "d3":{"actions":[{"category":"","action":"","owner":"","date":"","status":""}],"summary":"","evidence_summary":""},
- "d4":{"five_whys":[{"why":"","answer":""}],"root_cause":"","escape_cause":"","summary":"","evidence_summary":""},
+ "d3":{"actions":[],"summary":"待确认","evidence_summary":""},
+ "d4":{"occurrence_why_rows":[{"level":"Why1","problem":"","cause":""}],"escape_why_rows":[{"level":"Why1","problem":"","cause":""}],"root_cause":"","escape_cause":"","summary":"","evidence_summary":""},
  "d5":{"countermeasures":[{"action":"","owner":"","date":"","status":""}],"summary":"","evidence_summary":""},
  "d6":{"validations":[{"method":"","result":"","owner":"","date":""}],"summary":"","evidence_summary":""},
- "d7":{"preventions":[{"item":"","yes_no":"","comment":"","owner":"","date":"","status":""}],"summary":"","evidence_summary":""},
+ "d7":{"preventions":[],"summary":"按 D5 长期对策自动生成","evidence_summary":""},
  "d8":{"conclusion":"","summary":"","evidence_summary":""}
 }
 """.strip()
@@ -151,8 +162,9 @@ SYSTEM_PROMPT += """
 Additionally include a root-level image_pages object with d2, d4, d5, d6, d7 and d8 arrays.
 Each page must contain title, summary, layout (single, two, three or four), and images (exact image file names).
 Use single for screenshots, comparison images, or images that require inspection individually. Only group images that show one same activity.
-Every supplied image name must appear exactly once in its own D-stage list.
+Every supplied image name must appear exactly once in its own D-stage list. Do not mention any image file name in summary text.
 """
+
 SYSTEM_PROMPT += """
 
 For d4, return occurrence_why_rows with exactly five ordered rows (Why1 to Why5), and escape_why_rows with exactly three ordered rows (Why1 to Why3).
@@ -325,8 +337,69 @@ def image_slots(count: int) -> list[tuple[float, float, float, float]]:
     return [(0.55, 1.15, 4.25, 1.70), (5.15, 1.15, 4.25, 1.70), (0.55, 3.10, 4.25, 1.70), (5.15, 3.10, 4.25, 1.70)]
 
 
+PREVENTION_KEYWORDS: dict[str, tuple[str, ...]] = {
+    "程序Procedure": ("程序", "流程文件", "process", "procedure", "ecn"),
+    "工作指示Work instruction": ("工作指示", "作业指导", "wi"),
+    "操作指示SOP": ("sop", "操作指示", "作业规范", "检验"),
+    "流程图Flow chart": ("流程图", "flow chart"),
+    "失效模式分析D/P-FMEA ": ("fmea", "失效模式"),
+    "控制计划Control Plan": ("控制计划", "control plan"),
+    "设计规范Design disciplines": ("设计规范", "设计文件", "图纸"),
+    "经验教训Lessons Learned": ("经验教训", "教训", "lessons"),
+}
+
+
+def match_prevention_to_d5(countermeasures: list[dict[str, Any]]) -> dict[str, tuple[str, str]]:
+    """Match each D7 row's pre-defined item against D5 long-term actions.
+
+    The lookup keys preserve any trailing whitespace that templates may carry,
+    so callers should look up with the same raw cell text. A single D5 action
+    can satisfy multiple D7 rows; each D7 row only fires once.
+    """
+    result: dict[str, tuple[str, str]] = {}
+    if not countermeasures:
+        for item in PREVENTION_KEYWORDS.keys():
+            result[item] = ("否", "NA")
+        return result
+    for d7_item, keywords in PREVENTION_KEYWORDS.items():
+        hit_index = -1
+        for index, action_item in enumerate(countermeasures):
+            action_text = str(action_item.get("action", "")).lower()
+            if any(keyword.lower() in action_text for keyword in keywords):
+                hit_index = index
+                break
+        if hit_index >= 0:
+            action_text = str(countermeasures[hit_index].get("action", "")).strip()
+            result[d7_item] = ("是", f"对策{hit_index + 1}：{action_text}")
+        else:
+            result[d7_item] = ("否", "NA")
+    return result
+
+
+def _lookup_prevention(inference: dict[str, tuple[str, str]], cell_text: str) -> tuple[str, str]:
+    """Match D7 cell text against inference; tolerate trailing whitespace."""
+    if cell_text in inference:
+        return inference[cell_text]
+    stripped = cell_text.strip()
+    if stripped in inference:
+        return inference[stripped]
+    for key, value in inference.items():
+        if key.strip() == stripped:
+            return value
+    return ("否", "NA")
+
+
+def group_prefix(name: str) -> str | None:
+    """Return the leading numeric group prefix for names like '1-1' or '2-3.png'."""
+    stem = Path(name).stem
+    match = re.match(r"^(\d+)\s*[-_]", stem)
+    if not match:
+        return None
+    return match.group(1)
+
+
 def plan_image_pages(images: list[Path], plans: list[dict[str, Any]], default_summary: str) -> list[dict[str, Any]]:
-    """Honor model-selected grouping. Unassigned images remain one image per page."""
+    """Honor model grouping, then auto-group by N- prefix, then leave leftovers alone."""
     by_name = {image.name: image for image in images}
     used: set[str] = set()
     result: list[dict[str, Any]] = []
@@ -341,21 +414,51 @@ def plan_image_pages(images: list[Path], plans: list[dict[str, Any]], default_su
             group, selected = selected[:limit], selected[limit:]
             used.update(image.name for image in group)
             result.append({"images": group, "title": text(plan.get("title")), "summary": text(plan.get("summary") or default_summary)})
+
+    # Auto-group remaining images that share an "N-" numeric prefix (e.g. 1-1, 1-2, 2-1).
+    prefix_buckets: dict[str, list[Path]] = {}
+    for image in images:
+        if image.name in used:
+            continue
+        prefix = group_prefix(image.name)
+        if prefix is None:
+            continue
+        prefix_buckets.setdefault(prefix, []).append(image)
+    for prefix in sorted(prefix_buckets.keys(), key=lambda value: int(value)):
+        bucket = prefix_buckets[prefix]
+        if not bucket:
+            continue
+        used.update(image.name for image in bucket)
+        result.append({"images": bucket, "title": "证据材料", "summary": default_summary})
+
     for image in images:
         if image.name not in used:
             result.append({"images": [image], "title": "证据材料", "summary": default_summary})
+
     return result
 
 
-def insert_evidence_pages(presentation: Presentation, source_index: int, stage: str, pages: list[dict[str, Any]], before_source: bool = False) -> None:
+def insert_evidence_pages(presentation: Presentation, source_index: int, stage: str, pages: list[dict[str, Any]], before_source: bool = False, images: list[Path] | None = None) -> None:
     insertion_index = source_index
     source = presentation.slides[source_index]
+    image_name_set = {image.name for image in (images or [])}
     for page_number, page in enumerate(pages, start=1):
         slide = clone_slide_from(presentation, source)
         for shape in list(slide.shapes):
             if shape.has_table or shape.name == "AI_DYNAMIC" or (shape.has_text_frame and "{{Content}}" in shape.text):
                 remove_shape(shape)
-        add_text(slide, page["summary"], 0.55, 5.03, 8.90, 0.25)
+        body = page["summary"].strip()
+        if body.startswith("小结"):
+            caption = body
+        else:
+            caption = f"小结：{body}" if body else "小结："
+        if image_name_set:
+            for filename in image_name_set:
+                caption = caption.replace(filename, "")
+        caption = re.sub(r"\s{2,}", " ", caption).strip()
+        if not caption.startswith("小结"):
+            caption = f"小结：{caption}" if caption else "小结："
+        add_text(slide, caption, 0.55, 5.03, 8.90, 0.25)
         for image, slot in zip(page["images"], image_slots(len(page["images"]))):
             crop_picture(slide, image, *slot)
         if before_source:
@@ -370,7 +473,7 @@ def fill_template(template: Path, output: Path, data: dict[str, Any], materials:
     if len(presentation.slides) < 11:
         raise ValueError("模板页数不足，需包含封面和 D0-D8 页面。")
 
-    cover, d0, d1, d2 = data["cover"], data["d0"], data["d1"], data["d2"]
+    cover, d1 = data["cover"], data["d1"]
     slide = presentation.slides[0]
     # The title still supports {{Content}}, while cover approvals can also be ordinary
     # labels such as "编制：" after a customer has customized the template.
@@ -390,38 +493,23 @@ def fill_template(template: Path, output: Path, data: dict[str, Any], materials:
                     shape.name = "AI_DYNAMIC"
                     break
 
-    slide = presentation.slides[2]
-    d0_lines = [d0["fault_date"], d0["model"], d0["trace_code"], d0["station"], d0["description"]]
-    for index, paragraph in enumerate(slide.shapes[1].text_frame.paragraphs):
-        if index < len(d0_lines) and "{{Content}}" in paragraph.text:
-            paragraph.text = paragraph.text.replace("{{Content}}", text(d0_lines[index]))
+    # D0 问题了解：模板的 5 行占位符全部保持空白，后续由 K3 或人工填写。
+    # 故意不写 slide 2 的任何内容。
 
+    # D1 团队成立：保留模板的"序号 / 角色"列，其他列由 AI 填入。
     team_shape = first_table(presentation.slides[3])
     expand_team_table(team_shape, len(d1.get("team", [])), presentation.slide_height)
     team_table = team_shape.table
     for row, member in enumerate(d1.get("team", []), start=1):
-        put_cell(team_table, row, 0, row)
-        for col, key in enumerate(("name", "role", "duty", "contact", "module"), start=1):
-            put_cell(team_table, row, col, member.get(key))
+        put_cell(team_table, row, 1, member.get("name"))
+        put_cell(team_table, row, 3, member.get("duty"))
+        put_cell(team_table, row, 4, member.get("contact"))
+        put_cell(team_table, row, 5, member.get("module"))
 
-    d2_table = first_table(presentation.slides[4]).table
-    d2_map = {
-        (0, 1): d2["customer"], (0, 3): d2["date"], (0, 5): d2["supplier"],
-        (1, 1): d2["model"], (1, 3): d2["vehicle_model"], (1, 5): d2["material"],
-        (2, 1): d2["quantity"], (2, 3): d2["failure_type"], (2, 5): d2["lot"],
-        (3, 1): d2["location"], (3, 3): d2["production_date"], (3, 5): d2["vin"],
-        (4, 1): d2["complaint_source"], (5, 1): d2["symptom"], (6, 1): d2["confirmed_symptom"],
-    }
-    for (row, col), value in d2_map.items():
-        put_cell(d2_table, row, col, value)
+    # D2 故障描述：模板保留空白，等待 K3 接入或人工补录。
 
-    d3_table = first_table(presentation.slides[5]).table
-    by_category = {text(item.get("category")): item for item in data["d3"].get("actions", [])}
-    for row in range(1, 8):
-        category = d3_table.cell(row, 1).text.strip()
-        item = by_category.get(category, {})
-        for col, key in ((2, "action"), (3, "owner"), (4, "date"), (5, "status")):
-            put_cell(d3_table, row, col, item.get(key, "待确认"))
+    # D3 临时措施：模板保留空白，由用户后续手动填写。
+    # 故意不写 slide 5 的任何内容。
 
     # Fill the two D4 5WHY tables from model-generated occurrence and escape reason chains.
     d4 = data.get("d4", {})
@@ -440,26 +528,27 @@ def fill_template(template: Path, output: Path, data: dict[str, Any], materials:
             values = [str(item.get("answer", "")).strip() for item in d4.get("five_whys", []) if str(item.get("answer", "")).strip()]
         return [(problem if index == 0 else "", value) for index, value in enumerate(values)]
 
-    occurrence_table = first_table(presentation.slides[7]).table
+    occurrence_table = first_table(presentation.slides[8]).table
     occurrence_rows = reason_chain("occurrence")
     for row_index, (problem, cause) in enumerate(occurrence_rows[:len(occurrence_table.rows) - 1], start=1):
         put_cell(occurrence_table, row_index, 1, problem)
         put_cell(occurrence_table, row_index, 2, cause)
-    escape_table = first_table(presentation.slides[8]).table
+    escape_table = first_table(presentation.slides[9]).table
     escape_rows = reason_chain("escape")
     for row_index, (problem, cause) in enumerate(escape_rows[:len(escape_table.rows) - 1], start=1):
         put_cell(escape_table, row_index, 1, problem)
         put_cell(escape_table, row_index, 2, cause)
 
-    d5_table = first_table(presentation.slides[9]).table
-    d5_lines = [f"{index + 1}. {text(x.get('action'))}（{text(x.get('owner'))}，{text(x.get('date'))}，{text(x.get('status'))}）" for index, x in enumerate(data["d5"].get("countermeasures", []))]
+    d5_table = first_table(presentation.slides[10]).table
+    d5_countermeasures = data["d5"].get("countermeasures", [])
+    d5_lines = [f"{index + 1}. {text(x.get('action'))}（{text(x.get('owner'))}，{text(x.get('date'))}，{text(x.get('status'))}）" for index, x in enumerate(d5_countermeasures)]
     put_cell(d5_table, 1, 0, "1")
     put_cell(d5_table, 1, 1, "\n".join(d5_lines))
     put_cell(d5_table, 1, 2, "待确认")
     put_cell(d5_table, 1, 3, "待确认")
     put_cell(d5_table, 1, 4, "待确认")
 
-    d6_table = first_table(presentation.slides[10]).table
+    d6_table = first_table(presentation.slides[11]).table
     d6_lines = [f"{index + 1}. {text(x.get('method'))}" for index, x in enumerate(data["d6"].get("validations", []))]
     result_lines = [f"{index + 1}. {text(x.get('result'))}" for index, x in enumerate(data["d6"].get("validations", []))]
     put_cell(d6_table, 1, 0, "1")
@@ -468,27 +557,41 @@ def fill_template(template: Path, output: Path, data: dict[str, Any], materials:
     put_cell(d6_table, 1, 3, "待确认")
     put_cell(d6_table, 1, 4, "待确认")
 
-    d7_table = first_table(presentation.slides[11]).table
-    prevention_map = {text(item.get("item")): item for item in data["d7"].get("preventions", [])}
+    # D7 预防措施：基于 D5 长期对策推断每一项是否触发。
+    d7_table = first_table(presentation.slides[12]).table
+    if d5_countermeasures:
+        inference = match_prevention_to_d5(d5_countermeasures)
+    else:
+        inference = {}
     for row in range(1, len(d7_table.rows)):
-        item = prevention_map.get(d7_table.cell(row, 0).text.strip(), {})
-        for col, key in ((1, "yes_no"), (2, "comment"), (3, "owner"), (4, "date"), (5, "status")):
-            # Do not touch unmatched or empty cells: this preserves the customer's
-            # original row heights, widths, borders and default formatting.
-            value = item.get(key) if item else ""
-            if value not in (None, "", "待确认"):
-                put_cell(d7_table, row, col, value)
+        verdict, comment = _lookup_prevention(inference, d7_table.cell(row, 0).text)
+        put_cell(d7_table, row, 1, verdict)
+        put_cell(d7_table, row, 2, comment)
+        # owner / date / status 留空待人工填写。
 
-    replace_tokens(presentation.slides[12].shapes[1], {"{{Content}}": data["d8"].get("conclusion")})
+    # D8 结案总结：模板的 D8 文本框不再包含 {{Content}}，改为追加一个独立的结案段。
+    d8_slide = presentation.slides[13]
+    d8_conclusion = str(data["d8"].get("conclusion") or "").strip()
+    if d8_conclusion:
+        d8_box = d8_slide.shapes.add_textbox(Inches(0.55), Inches(2.4), Inches(8.9), Inches(2.5))
+        d8_box.name = "AI_DYNAMIC"
+        frame = d8_box.text_frame
+        frame.word_wrap = True
+        first = True
+        for line in d8_conclusion.split("\n"):
+            paragraph = frame.paragraphs[0] if first else frame.add_paragraph()
+            first = False
+            set_paragraph_text(paragraph, line)
+            paragraph.alignment = PP_ALIGN.LEFT
 
     # Insert stage evidence immediately after its own slide. Descending order keeps source indexes stable.
-    stage_sources = (("D8 结案总结", "d8", 12), ("D7 预防措施", "d7", 11), ("D6 效果验证", "d6", 10), ("D5 长期对策", "d5", 9), ("D4 原因分析", "d4", 6), ("D2 问题描述", "d2", 4))
+    stage_sources = (("D8 结案总结", "d8", 13), ("D7 预防措施", "d7", 12), ("D6 效果验证", "d6", 11), ("D5 长期对策", "d5", 10), ("D4 原因分析", "d4", 6), ("D2 问题描述", "d2", 4))
     page_data = data.get("image_pages", {})
     for stage, key, source_index in stage_sources:
         images = materials[stage]["images"]
         if images:
             pages = plan_image_pages(images, page_data.get(key, []), data.get(key, {}).get("evidence_summary", ""))
-            insert_evidence_pages(presentation, source_index, stage, pages)
+            insert_evidence_pages(presentation, source_index, stage, pages, images=images)
 
     output.parent.mkdir(parents=True, exist_ok=True)
     presentation.save(str(output))
