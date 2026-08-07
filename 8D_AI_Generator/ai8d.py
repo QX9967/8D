@@ -16,6 +16,7 @@ from typing import Any
 
 from json_repair import repair_json
 from openai import OpenAI
+import httpx
 from PIL import Image
 from pptx import Presentation
 from pptx.enum.text import PP_ALIGN
@@ -50,6 +51,17 @@ def get_api_key() -> str:
     if env_key:
         return env_key.strip()
     return DEFAULT_API_KEY
+
+
+def make_openai_client(api_key: str, timeout: float) -> OpenAI:
+    """创建 OpenAI 客户端，始终直连内网服务，不走系统代理。
+
+    TUN/系统代理开启时，httpx 默认会读取系统代理并把内网请求转发到
+    代理端口（导致 502），这里显式禁用代理并固定走物理网卡直连。
+    """
+    transport = httpx.HTTPTransport(proxy=None)
+    http_client = httpx.Client(transport=transport, trust_env=False, timeout=timeout)
+    return OpenAI(base_url=get_api_url(), api_key=api_key, http_client=http_client, max_retries=0)
 
 
 def read_text(path: Path) -> str:
@@ -310,7 +322,7 @@ def split_batches(items: list[Any], batch_size: int) -> list[list[Any]]:
 
 def generate_image_evidence(materials: dict[str, dict[str, Any]], api_key: str) -> dict[str, list[dict[str, str]]]:
     """Analyze large image sets in bounded requests, retrying only the failed batch."""
-    client = OpenAI(base_url=get_api_url(), api_key=api_key, timeout=120.0, max_retries=0)
+    client = make_openai_client(api_key, 120.0)
     evidence: dict[str, list[dict[str, str]]] = {}
     for stage, payload in materials.items():
         batches = split_batches(list(payload["images"]), IMAGES_PER_BATCH)
@@ -366,7 +378,7 @@ def generate_image_evidence(materials: dict[str, dict[str, Any]], api_key: str) 
 
 
 def generate_content(materials: dict[str, dict[str, Any]], api_key: str) -> dict[str, Any]:
-    client = OpenAI(base_url=get_api_url(), api_key=api_key, timeout=300.0, max_retries=2)
+    client = make_openai_client(api_key, 300.0)
     started = time.monotonic()
     image_count = sum(len(payload["images"]) for payload in materials.values())
     image_evidence: dict[str, list[dict[str, str]]] = {}
@@ -409,7 +421,7 @@ def generate_title_from_ppt(report: Path, api_key: str) -> str:
                 parts.append(shape.text.strip())
             if shape.has_table:
                 parts.extend(cell.text.strip() for row in shape.table.rows for cell in row.cells if cell.text.strip())
-    client = OpenAI(base_url=get_api_url(), api_key=api_key, timeout=120.0, max_retries=2)
+    client = make_openai_client(api_key, 120.0)
     started = time.monotonic()
     print("      [标题] 正在发送完整报告摘要给模型…", flush=True)
     try:
