@@ -841,6 +841,25 @@ def insert_evidence_pages(presentation: Presentation, source_index: int, stage: 
         insertion_index += 1
 
 
+def resolve_output_path(desired: Path) -> Path:
+    """Return a writable path, falling back to timestamped name if the file is locked."""
+    if not desired.exists():
+        return desired
+    try:
+        with open(desired, "r+b") as _:
+            pass
+        return desired
+    except (PermissionError, OSError):
+        pass
+    stem = desired.stem
+    suffix = desired.suffix
+    parent = desired.parent
+    timestamp = time.strftime("%Y%m%d_%H%M%S")
+    fallback = parent / f"{stem}_{timestamp}{suffix}"
+    print(f"提示：{desired.name} 文件被占用，将保存为：{fallback.name}")
+    return fallback
+
+
 def fill_template(template: Path, output: Path, data: dict[str, Any], materials: dict[str, dict[str, Any]]) -> None:
     presentation = Presentation(str(template))
     pages = locate_template_slides(presentation)
@@ -1086,21 +1105,23 @@ def main() -> int:
             print("[2/5] 正在请求模型生成 8D 内容（模型会自动重试，最长等待 90 秒）...")
             data = generate_content(materials, get_api_key())
             print("[3/5] 模型生成成功，正在保存 AI 草稿...")
-            args.output.with_suffix(".json").write_text(json.dumps(data, ensure_ascii=False, indent=2), encoding="utf-8")
+            json_path = resolve_output_path(args.output.with_suffix(".json"))
+            json_path.write_text(json.dumps(data, ensure_ascii=False, indent=2), encoding="utf-8")
         warnings = content_warnings(data)
         if warnings:
             print("提示：" + "；".join(warnings) + "。已保留空白字段供人工补充。")
         print("[4/5] 正在写入表格、文字并插入图片，请稍候...")
-        fill_template(args.template, args.output, data, materials)
+        actual_output = resolve_output_path(args.output)
+        fill_template(args.template, actual_output, data, materials)
         try:
             print("[5/5] 正在基于完整 PPT 生成报告标题...")
-            title = generate_title_from_ppt(args.output, get_api_key())
+            title = generate_title_from_ppt(actual_output, get_api_key())
             if title:
-                write_cover_title(args.output, title)
+                write_cover_title(actual_output, title)
                 print(f"      已写入标题：{title}")
         except Exception as exc:
             print(f"提示：PPT 已生成，但标题生成失败：{exc}")
-        print(f"完成：已生成可编辑 PPT：{args.output.resolve()}")
+        print(f"完成：已生成可编辑 PPT：{actual_output.resolve()}")
         print("====================================")
         return 0
     except Exception as exc:
