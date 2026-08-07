@@ -189,21 +189,22 @@ SYSTEM_PROMPT = r"""
 你是汽车电子质量 8D 报告助手。基于用户给出的分组文字和现场证据图片，输出单个 JSON 对象，不要 Markdown，不要解释。
 
 原则：
-1. 不得编造日期、数据或责任人；但应基于文字记录和图片证据完成合理的原因链、长期对策、验证方式和结案总结。没有明确日期或责任人时留空，不能用“待确认”代替内容。
+1. 不得编造日期、数据或责任人；但应基于文字记录和图片证据完成合理的原因链、长期对策、验证方式和结案总结。没有明确日期或责任人时留空，不能用"待确认"代替内容。
 2. 图片只能支持可直接观察到的现象；不能凭图片断言真实根因。
 3. 使用正式、简洁的中文。每项最多两句。team 最多 6 人；countermeasures、validations 各最多 5 项。
 4. evidence_summary 是每个阶段图片想证明的简短说明（不含图片文件名），没有图片则为空字符串。
+5. D2/D4/D5/D6/D7/D8 的 summary 字段控制在 40 字以内（1 句），不要长篇叙述。
 
 填写要求（关键）：
-- D0 问题了解：根据材料填写 fault_date / model / trace_code / station / description；材料没有明确说明的字段留空，不要写“待确认”。
+- D0 问题了解：根据材料填写 fault_date / model / trace_code / station / description；材料没有明确说明的字段留空，不要写"待确认"。
 - D1 团队成立：team 列表里每人按 name / role / duty / contact / module 输出，但 role 字段保持模板给定角色（组长 / 组员），不要改写。
 - D2 故障描述：customer / date / supplier / model / vehicle_model / material / quantity / failure_type / lot / location / production_date / vin / complaint_source / symptom / confirmed_symptom 全部留空字符串。
 - D3 临时措施：actions 列表留空（不要生成任何条目），summary 写"待确认"。
-- D4 原因分析：仍按 occurrence_why_rows（五行 Why1–Why5）和 escape_why_rows（三行 Why1–Why3）输出，每行含 level / problem / cause。
-- D5 长期对策：按 action / owner / date / status 输出最多 5 条；status 默认"进行中"。
+- D4 原因分析：必须输出 occurrence_why_rows 的 Why1 到 Why5 共五行，escape_why_rows 的 Why1 到 Why3 共三行，每行含 level / problem / cause，缺一不可。即使证据不充分也必须基于材料合理推断原因链并填满全部行，不能只填一行就结束。cause 是推理出的原因答案，不能留空或写"无"。problem 和 cause 各写一到两句具体内容，不使用占位文本。
+- D5 长期对策：按 action / owner / date / status 输出至少 4 条（最多 5 条）；status 默认"进行中"。action 必须覆盖具体整改动作，并自然包含与程序文件、FMEA、控制计划、SOP、经验教训库相关的关键词，以确保与 D7 预防措施表格联动。
 - D6 效果验证：按 method / result / owner / date 输出。
-- D7 预防措施：preventions 留空（不在此处生成），summary 写"按 D5 长期对策自动生成"。
-- D8 结案总结：返回 background / current_status / system_strategy / strategy_logic 四个字段，分别对应模板的四个 {{content}} 占位符；每项使用 2–4 句，覆盖问题概述、根因、长期措施、预防措施推广、横向展开与持续改进。另返回 conclusion，全文不少于 500 字。
+- D7 预防措施：按 preventions 数组输出，每项含 item（程序Procedure/工作指示Work instruction/操作指示SOP/流程图Flow chart/失效模式分析D/P-FMEA/控制计划Control Plan/设计规范Design disciplines/经验教训Lessons Learned）、verdict（"是"或"否"）、comment（如为"是"则填写关联的具体对策描述，如为"否"则写"NA"）。summary 写具体一句话。
+- D8 结案总结：必须分别填写 background（问题背景概述，2-3 句）、current_status（当前状态和处理结果，2-3 句）、system_strategy（系统性整改策略和措施，2-3 句）、strategy_logic（策略逻辑、横向推广和持续改进，2-3 句）。四个字段缺一不可，不能将所有内容堆在 background 中，其它字段也必须独立成段。conclusion 全文不少于 500 字。
 
 输出键必须齐全，按以下 JSON 结构：
 {
@@ -215,8 +216,8 @@ SYSTEM_PROMPT = r"""
  "d4":{"occurrence_why_rows":[{"level":"Why1","problem":"","cause":""}],"escape_why_rows":[{"level":"Why1","problem":"","cause":""}],"root_cause":"","escape_cause":"","summary":"","evidence_summary":""},
  "d5":{"countermeasures":[{"action":"","owner":"","date":"","status":""}],"summary":"","evidence_summary":""},
  "d6":{"validations":[{"method":"","result":"","owner":"","date":""}],"summary":"","evidence_summary":""},
- "d7":{"preventions":[],"summary":"按 D5 长期对策自动生成","evidence_summary":""},
- "d8":{"background":"","current_status":"","system_strategy":"","strategy_logic":"","conclusion":"","summary":"","evidence_summary":""}
+  "d7":{"preventions":[{"item":"","verdict":"","comment":""}],"summary":"","evidence_summary":""},
+  "d8":{"background":"问题背景概述（2-3 句，必须独立填写）","current_status":"当前状态和处理结果（2-3 句，必须独立填写）","system_strategy":"系统性整改策略和措施（2-3 句，必须独立填写）","strategy_logic":"策略逻辑、横向推广和持续改进（2-3 句，必须独立填写）","conclusion":"","summary":"","evidence_summary":""}
 }
 """.strip()
 SYSTEM_PROMPT += """
@@ -225,8 +226,8 @@ Additionally include a root-level image_pages object with d2, d4, d5, d6, d7 and
 Each page must contain title, summary, layout (single, two, three or four), and images (exact image file names).
 Use single for screenshots, comparison images, or images that require inspection individually. Only group images that show one same activity.
 Every supplied image name must appear exactly once in its own D-stage list. Do not mention any image file name in summary text.
-The image-page summary is an 8D investigation report caption, not a visual description. State the investigation object, what was checked or verified, the finding or conclusion supported by the evidence, and its relevance to containment, root-cause analysis, corrective action, validation, or prevention. Do not write generic captions such as “shown in the image” or merely list visible UI elements.
-"""
+The image-page summary is an 8D investigation report caption, not a visual description. State the investigation object, what was checked or verified, the finding or conclusion supported by the evidence, and its relevance to containment, root-cause analysis, corrective action, validation, or prevention. Do not write generic captions such as "shown in the image" or merely list visible UI elements.
+当同一 D 阶段有多页时，每页的 summary 必须根据各自图片内容写出不同的小结，禁止多页使用相同文字。"""
 
 SYSTEM_PROMPT += """
 
@@ -271,8 +272,12 @@ def content_warnings(data: dict[str, Any]) -> list[str]:
         missing.append("D4发生原因5WHY（5行原因）")
     if len(escape) < 3 or any(not str(row.get("cause") or "").strip() for row in escape[:3]):
         missing.append("D4流出原因5WHY（3行原因）")
-    if not usable_records(data.get("d5", {}).get("countermeasures", []), "action"):
-        missing.append("D5长期对策")
+    if not all(str(row.get("problem") or "").strip() for row in occurrence[:5]):
+        missing.append("D4发生原因problem列有空行")
+    if not all(str(row.get("problem") or "").strip() for row in escape[:3]):
+        missing.append("D4流出原因problem列有空行")
+    if len(usable_records(data.get("d5", {}).get("countermeasures", []), "action")) < 4:
+        missing.append("D5长期对策（至少4条）")
     if not usable_records(data.get("d6", {}).get("validations", []), "method"):
         missing.append("D6效果验证")
     conclusion = str(data.get("d8", {}).get("conclusion") or "").strip()
@@ -360,6 +365,7 @@ def generate_content(materials: dict[str, dict[str, Any]], api_key: str) -> dict
     client = OpenAI(base_url=get_api_url(), api_key=api_key, timeout=300.0, max_retries=2)
     started = time.monotonic()
     image_count = sum(len(payload["images"]) for payload in materials.values())
+    image_evidence: dict[str, list[dict[str, str]]] = {}
     if image_count <= MAX_IMAGES_PER_DIRECT_REQUEST:
         print(f"      [模型] 共 {image_count} 张图片，使用单次图文生成模式。", flush=True)
         prompt = build_prompt(materials)
@@ -381,6 +387,8 @@ def generate_content(materials: dict[str, dict[str, Any]], api_key: str) -> dict
         raw = response.choices[0].message.content or ""
         print(f"      [模型] 已收到回复（{time.monotonic() - started:.1f} 秒），正在校验内容…", flush=True)
         data = parse_json(raw)
+        if image_evidence:
+            data["_image_evidence"] = image_evidence
         print("      [模型] 内容校验成功。", flush=True)
         return data
     except Exception as exc:
@@ -434,9 +442,17 @@ def locate_cover_slide(presentation: Presentation) -> int:
 
 def write_cover_title(report: Path, title: str) -> None:
     presentation = Presentation(str(report))
-    cover = presentation.slides[locate_cover_slide(presentation)]
+    try:
+        cover_index = locate_cover_slide(presentation)
+    except ValueError:
+        return
+    cover = presentation.slides[cover_index]
     for shape in cover.shapes:
-        replace_tokens(shape, {"{{Content}}": title})
+        if shape.name == "AI_COVER_TITLE":
+            shape.text = title
+            break
+    else:
+        replace_tokens(cover.shapes[0], {"{{Content}}": title})
     presentation.save(str(report))
 
 
@@ -765,6 +781,7 @@ def insert_evidence_pages(presentation: Presentation, source_index: int, stage: 
     insertion_index = source_index
     source = presentation.slides[source_index]
     image_name_set = {image.name for image in (images or [])}
+    seen_summaries: list[str] = []
     for page_number, page in enumerate(pages, start=1):
         slide = clone_slide_from(presentation, source)
         for shape in list(slide.shapes):
@@ -772,9 +789,9 @@ def insert_evidence_pages(presentation: Presentation, source_index: int, stage: 
                 remove_shape(shape)
         image_summaries = page.get("image_summaries", [])
         if len(page["images"]) > 1 and len(image_summaries) == len(page["images"]):
-            body = "；".join(f"图{index}：{summary}" for index, summary in enumerate(image_summaries, start=1))
+            body = "；".join(f"图{index}：{summary[:60]}" for index, summary in enumerate(image_summaries, start=1))
         else:
-            body = page["summary"].strip()
+            body = page["summary"].strip()[:200]
         if body.startswith("小结"):
             caption = body
         else:
@@ -785,6 +802,11 @@ def insert_evidence_pages(presentation: Presentation, source_index: int, stage: 
         caption = re.sub(r"\s{2,}", " ", caption).strip()
         if not caption.startswith("小结"):
             caption = f"小结：{caption}" if caption else "小结："
+        if len(pages) > 1:
+            normalized = caption.strip()
+            if normalized in seen_summaries:
+                caption = f"{caption}（第{page_number}页）"
+        seen_summaries.append(caption.strip())
         add_text(slide, caption, 0.55, 4.82 if len(page["images"]) > 1 else 5.03, 8.90, 0.55 if len(page["images"]) > 1 else 0.25, size=8 if len(page["images"]) > 1 else 10)
         for image, slot in zip(page["images"], image_slots(len(page["images"]))):
             crop_picture(slide, image, *slot)
@@ -808,6 +830,8 @@ def fill_template(template: Path, output: Path, data: dict[str, Any], materials:
     # The title still supports {{Content}}, while cover approvals can also be ordinary
     # labels such as "编制：" after a customer has customized the template.
     for shape in slide.shapes:
+        if shape.has_text_frame and "{{Content}}" in shape.text:
+            shape.name = "AI_COVER_TITLE"
         replace_tokens(shape, {"{{Content}}": cover.get("title", "")})
         if not shape.has_text_frame:
             continue
@@ -907,14 +931,26 @@ def fill_template(template: Path, output: Path, data: dict[str, Any], materials:
         put_cell(d6_table, row_index, 3, item.get("owner"))
         put_cell(d6_table, row_index, 4, item.get("date"))
 
-    # D7 预防措施：基于 D5 长期对策推断每一项是否触发。
+    # D7 预防措施：优先用模型生成的 D7 数据，无数据时回退关键词匹配。
+    d7_data = data.get("d7", {})
     d7_table = first_table(presentation.slides[pages["d7"]]).table
-    if d5_countermeasures:
-        inference = match_prevention_to_d5(d5_countermeasures)
+    model_preventions = d7_data.get("preventions", []) if isinstance(d7_data, dict) else []
+    if len(model_preventions or []) >= 1 and any(
+        isinstance(p, dict) and str(p.get("verdict") or "").strip() == "是"
+        for p in (model_preventions or [])
+    ):
+        prevention_map: dict[str, tuple[str, str]] = {
+            str(p.get("item", "")).strip(): (
+                str(p.get("verdict", "")).strip() or "否",
+                str(p.get("comment", "")).strip() or "NA",
+            )
+            for p in (model_preventions or [])
+            if isinstance(p, dict)
+        }
     else:
-        inference = {}
+        prevention_map = match_prevention_to_d5(d5_countermeasures) if d5_countermeasures else {}
     for row in range(1, len(d7_table.rows)):
-        verdict, comment = _lookup_prevention(inference, d7_table.cell(row, 0).text)
+        verdict, comment = _lookup_prevention(prevention_map, d7_table.cell(row, 0).text)
         put_cell(d7_table, row, 1, verdict)
         put_cell(d7_table, row, 2, comment)
         # owner / date / status 留空待人工填写。
@@ -944,10 +980,21 @@ def fill_template(template: Path, output: Path, data: dict[str, Any], materials:
         ("D2 问题描述", "d2", pages["d2"]),
     )
     page_data = data.get("image_pages", {})
+    batch_evidence = data.get("_image_evidence", {})
     for stage, key, source_index in stage_sources:
         images = materials[stage]["images"]
         if images:
-            pages = plan_image_pages(images, page_data.get(key, []), data.get(key, {}).get("evidence_summary", ""))
+            stage_pages = list(page_data.get(key, []))
+            ev = batch_evidence.get(stage, [])
+            if ev and stage_pages:
+                evidence_map: dict[str, str] = {s["image"]: s["summary"] for s in ev}
+                for p in stage_pages:
+                    page_images = list(p.get("images", []))
+                    image_summaries = [evidence_map.get(img, "") or p.get("summary", "") for img in page_images]
+                    if any(image_summaries) and len(set(image_summaries)) > 1:
+                        p["summary"] = "；".join(image_summaries)
+                        p["image_summaries"] = image_summaries
+            pages = plan_image_pages(images, stage_pages, data.get(key, {}).get("evidence_summary", ""))
             insert_evidence_pages(presentation, source_index, stage, pages, images=images)
 
     output.parent.mkdir(parents=True, exist_ok=True)
