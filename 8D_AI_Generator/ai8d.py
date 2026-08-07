@@ -7,12 +7,12 @@ import base64
 import copy
 import io
 import json
+import os
 import re
 import sys
 from pathlib import Path
 from typing import Any
 
-import keyring
 from json_repair import repair_json
 from openai import OpenAI
 from PIL import Image
@@ -21,10 +21,11 @@ from pptx.enum.text import PP_ALIGN
 from pptx.util import Inches, Pt
 
 
-BASE_URL = "https://www.packyapi.ai/v1"
+API_URL_ENV = "ADAYO8D_API_URL"
+API_KEY_ENV = "ADAYO8D_API_KEY"
+DEFAULT_API_URL = "http://[IP]:4000/v1"
+DEFAULT_API_KEY = "[密钥]"
 MODEL = "MiniMax-M3"
-KEYRING_SERVICE = "Adayo8D-AI"
-KEYRING_ACCOUNT = "Packy API Key"
 IMAGE_EXTENSIONS = {".png", ".jpg", ".jpeg", ".bmp", ".webp"}
 MAX_IMAGE_EDGE = 1600
 JPEG_QUALITY = 85
@@ -35,36 +36,17 @@ STAGE_NAMES = [
 ]
 
 
-def ask_for_key() -> str:
-    """Ask once through a Windows dialog; the returned key is saved in Credential Manager."""
-    try:
-        import tkinter as tk
-        from tkinter import simpledialog
-
-        root = tk.Tk()
-        root.withdraw()
-        value = simpledialog.askstring("Adayo 8D AI", "请输入 Packy API Key（仅首次需要）：", show="*")
-        root.destroy()
-    except Exception:
-        from getpass import getpass
-
-        value = getpass("Packy API Key: ")
-    if not value or not value.strip():
-        raise RuntimeError("未输入 API Key，已取消。")
-    return value.strip()
+def get_api_url() -> str:
+    """API 地址：优先读环境变量 ADAYO8D_API_URL，否则用固定默认值。"""
+    return os.environ.get(API_URL_ENV, DEFAULT_API_URL)
 
 
-def get_api_key(reset: bool = False) -> str:
-    if reset:
-        try:
-            keyring.delete_password(KEYRING_SERVICE, KEYRING_ACCOUNT)
-        except keyring.errors.PasswordDeleteError:
-            pass
-    value = keyring.get_password(KEYRING_SERVICE, KEYRING_ACCOUNT)
-    if not value:
-        value = ask_for_key()
-        keyring.set_password(KEYRING_SERVICE, KEYRING_ACCOUNT, value)
-    return value
+def get_api_key() -> str:
+    """API Key：优先读环境变量 ADAYO8D_API_KEY，否则用固定默认值。"""
+    env_key = os.environ.get(API_KEY_ENV)
+    if env_key:
+        return env_key.strip()
+    return DEFAULT_API_KEY
 
 
 def read_text(path: Path) -> str:
@@ -278,7 +260,7 @@ def content_warnings(data: dict[str, Any]) -> list[str]:
 
 
 def generate_content(materials: dict[str, dict[str, Any]], api_key: str) -> dict[str, Any]:
-    client = OpenAI(base_url=BASE_URL, api_key=api_key, timeout=90.0, max_retries=2)
+    client = OpenAI(base_url=get_api_url(), api_key=api_key, timeout=90.0, max_retries=2)
     try:
         response = client.chat.completions.create(
             model=MODEL,
@@ -303,7 +285,7 @@ def generate_title_from_ppt(report: Path, api_key: str) -> str:
                 parts.append(shape.text.strip())
             if shape.has_table:
                 parts.extend(cell.text.strip() for row in shape.table.rows for cell in row.cells if cell.text.strip())
-    client = OpenAI(base_url=BASE_URL, api_key=api_key, timeout=60.0, max_retries=2)
+    client = OpenAI(base_url=get_api_url(), api_key=api_key, timeout=60.0, max_retries=2)
     response = client.chat.completions.create(
         model=MODEL,
         temperature=0.1,
@@ -842,18 +824,12 @@ def main() -> int:
     parser.add_argument("--template", type=Path, help="8D 模板 .pptx")
     parser.add_argument("--materials", type=Path, help="含 D0-D8 子文件夹的材料根目录")
     parser.add_argument("--output", type=Path, help="输出 .pptx；省略时写入 EXE 同级目录")
-    parser.add_argument("--reset-key", action="store_true", help="删除凭据管理器中保存的 API Key")
     parser.add_argument("--draft-json", type=Path, help="跳过模型调用，使用已有 JSON 草稿生成 PPT")
     parser.add_argument("--clear", action="store_true", help="直接清空当前目录下 D0-D8 文件夹中的文件")
     parser.add_argument("--yes", action="store_true", help="与 --clear 配合使用，跳过清空确认")
     args = parser.parse_args()
-    auto_mode = not any((args.template, args.materials, args.output, args.draft_json, args.reset_key, args.clear))
+    auto_mode = not any((args.template, args.materials, args.output, args.draft_json, args.clear))
     try:
-        if args.reset_key:
-            get_api_key(reset=True)
-            print("旧密钥已清除，新密钥已保存。")
-            return 0
-
         if args.clear:
             root = executable_folder()
             if not args.yes and not confirm_clear(root):
