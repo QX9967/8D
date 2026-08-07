@@ -205,7 +205,7 @@ SYSTEM_PROMPT = r"""
 - D5 长期对策：按 action / owner / date / status 输出最多 5 条；status 默认"进行中"。
 - D6 效果验证：按 method / result / owner / date 输出。
 - D7 预防措施：preventions 留空（不在此处生成），summary 写"按 D5 长期对策自动生成"。
-- D8 结案总结：返回 background / current_status / system_strategy / strategy_logic 四个字段，分别对应模板的四个 {{content}} 占位符；每项使用 1–3 句，覆盖问题概述、根因、长期措施、预防措施推广、横向展开与持续改进。另返回 conclusion，全文不少于 250 字。
+- D8 结案总结：返回 background / current_status / system_strategy / strategy_logic 四个字段，分别对应模板的四个 {{content}} 占位符；每项使用 2–4 句，覆盖问题概述、根因、长期措施、预防措施推广、横向展开与持续改进。另返回 conclusion，全文不少于 500 字。
 
 输出键必须齐全，按以下 JSON 结构：
 {
@@ -227,6 +227,7 @@ Additionally include a root-level image_pages object with d2, d4, d5, d6, d7 and
 Each page must contain title, summary, layout (single, two, three or four), and images (exact image file names).
 Use single for screenshots, comparison images, or images that require inspection individually. Only group images that show one same activity.
 Every supplied image name must appear exactly once in its own D-stage list. Do not mention any image file name in summary text.
+The image-page summary is an 8D investigation report caption, not a visual description. State the investigation object, what was checked or verified, the finding or conclusion supported by the evidence, and its relevance to containment, root-cause analysis, corrective action, validation, or prevention. Do not write generic captions such as “shown in the image” or merely list visible UI elements.
 """
 
 SYSTEM_PROMPT += """
@@ -290,6 +291,36 @@ def generate_content(materials: dict[str, dict[str, Any]], api_key: str) -> dict
         return parse_json(response.choices[0].message.content or "")
     except Exception as exc:
         raise RuntimeError(f"AI 调用失败（已自动重试，超时 90 秒）：{exc}") from exc
+
+
+def generate_title_from_ppt(report: Path, api_key: str) -> str:
+    """Generate a concise report title from the completed PPT content."""
+    presentation = Presentation(str(report))
+    parts: list[str] = []
+    for slide in presentation.slides:
+        for shape in slide.shapes:
+            if shape.has_text_frame and shape.text.strip():
+                parts.append(shape.text.strip())
+            if shape.has_table:
+                parts.extend(cell.text.strip() for row in shape.table.rows for cell in row.cells if cell.text.strip())
+    client = OpenAI(base_url=BASE_URL, api_key=api_key, timeout=60.0, max_retries=2)
+    response = client.chat.completions.create(
+        model=MODEL,
+        temperature=0.1,
+        messages=[
+            {"role": "system", "content": "你是汽车质量8D报告编辑。根据完整报告内容生成正式中文标题。只输出标题，不加引号、序号或解释；不超过28个汉字。"},
+            {"role": "user", "content": "\n".join(parts)[:12000]},
+        ],
+    )
+    return (response.choices[0].message.content or "").strip().strip('“”"')[:40]
+
+
+def write_cover_title(report: Path, title: str) -> None:
+    presentation = Presentation(str(report))
+    cover = presentation.slides[locate_template_slides(presentation)["cover"]]
+    for shape in cover.shapes:
+        replace_tokens(shape, {"{{Content}}": title})
+    presentation.save(str(report))
 
 
 def text(value: Any) -> str:
@@ -397,10 +428,14 @@ def replace_content_placeholders(slide: Any, values: list[Any]) -> None:
         # only the marker and intentionally leaves the surrounding template
         # text intact.
         replacement = "" if value is None else str(value).strip()
-        paragraph.text = paragraph.text.replace("{{content}}", replacement)
+        marker_runs = [run for run in paragraph.runs if "{{content}}" in run.text]
+        if marker_runs:
+            for run in marker_runs:
+                run.text = run.text.replace("{{content}}", replacement)
+        else:
+            # Defensive fallback for a marker split across runs by a future template.
+            paragraph.text = paragraph.text.replace("{{content}}", replacement)
         shape.name = "AI_DYNAMIC"
-        for run in paragraph.runs:
-            set_run_font(run)
 
 
 def set_paragraph_text(paragraph: Any, value: Any) -> None:
@@ -874,6 +909,14 @@ def main() -> int:
             print("提示：" + "；".join(warnings) + "。已保留空白字段供人工补充。")
         print("[4/4] 正在写入表格、文字并插入图片，请稍候...")
         fill_template(args.template, args.output, data, materials)
+        try:
+            print("[5/5] 正在基于完整 PPT 生成报告标题...")
+            title = generate_title_from_ppt(args.output, get_api_key())
+            if title:
+                write_cover_title(args.output, title)
+                print(f"      已写入标题：{title}")
+        except Exception as exc:
+            print(f"提示：PPT 已生成，但标题生成失败：{exc}")
         print(f"已生成可编辑 PPT：{args.output.resolve()}")
         return 0
     except Exception as exc:
