@@ -8,6 +8,26 @@ import ai8d
 
 
 class Ai8DTests(unittest.TestCase):
+    def test_large_material_prompt_uses_text_evidence_without_raw_images(self):
+        materials = {
+            "D4 原因分析": {
+                "notes": "对异常样件进行复核。",
+                "images": [Path("1-1.png"), Path("1-2.png")],
+            }
+        }
+        prompt = ai8d.build_prompt(
+            materials,
+            include_images=False,
+            image_evidence={"D4 原因分析": [{"image": "1-1.png", "summary": "已复核装配状态。"}]},
+        )
+        self.assertTrue(any("图片分批排查结论" in item["text"] for item in prompt))
+        self.assertFalse(any(item["type"] == "image_url" for item in prompt))
+
+    def test_split_batches_keeps_request_size_bounded(self):
+        batches = ai8d.split_batches(list(range(23)), 10)
+        self.assertEqual([len(batch) for batch in batches], [10, 10, 3])
+        self.assertEqual(sum(batches, []), list(range(23)))
+
     def test_numeric_prefix_images_share_one_page(self):
         images = [Path("1-1.png"), Path("1-2.png"), Path("2-1.png")]
         pages = ai8d.plan_image_pages(images, [{"images": ["1-1.png"], "summary": "第一张证据"}], "")

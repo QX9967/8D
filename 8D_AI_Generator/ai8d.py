@@ -25,11 +25,13 @@ from pptx.util import Inches, Pt
 API_URL_ENV = "ADAYO8D_API_URL"
 API_KEY_ENV = "ADAYO8D_API_KEY"
 DEFAULT_API_URL = "http://10.2.9.178:4000/v1"
-DEFAULT_API_KEY = "sk-nQHNlCWBO73aAGqVwbImQfzd5NsGv4dyk4fPIAlYu1OHd79J"
+DEFAULT_API_KEY = ""
 MODEL = "MiniMax-M3"
 IMAGE_EXTENSIONS = {".png", ".jpg", ".jpeg", ".bmp", ".webp"}
 MAX_IMAGE_EDGE = 1600
 JPEG_QUALITY = 85
+MAX_IMAGES_PER_DIRECT_REQUEST = 12
+IMAGES_PER_BATCH = 10
 STAGE_CODES = ("d0", "d1", "d2", "d3", "d4", "d5", "d6", "d7", "d8")
 STAGE_NAMES = [
     "D0 相关信息", "D1 团队成立", "D2 问题描述", "D3 临时措施", "D4 原因分析",
@@ -161,12 +163,25 @@ def image_part(path: Path) -> dict[str, Any]:
     return {"type": "image_url", "image_url": {"url": f"data:image/jpeg;base64,{encoded}"}}
 
 
-def build_prompt(materials: dict[str, dict[str, Any]]) -> list[dict[str, Any]]:
+def build_prompt(
+    materials: dict[str, dict[str, Any]],
+    include_images: bool = True,
+    image_evidence: dict[str, list[dict[str, str]]] | None = None,
+) -> list[dict[str, Any]]:
+    """Build the final report request, with optional evidence text from image batches."""
     content: list[dict[str, Any]] = [{"type": "text", "text": "以下为 D0-D8 分组材料。TXT 是人员记录，图片是证据。请严格只依据材料输出。"}]
     for stage, payload in materials.items():
         content.append({"type": "text", "text": f"\n【{stage}】\n文字记录：\n{payload['notes'] or '（无）'}\n图片文件：{', '.join(image.name for image in payload['images']) or '（无）'}"})
-        for image in payload["images"]:
-            content.append(image_part(image))
+        summaries = (image_evidence or {}).get(stage, [])
+        if summaries:
+            evidence_text = "\n".join(
+                f"- {item['image']}：{item['summary']}" for item in summaries if item.get("summary")
+            )
+            if evidence_text:
+                content.append({"type": "text", "text": f"图片分批排查结论（可用于报告，不要在正文复述文件名）：\n{evidence_text}"})
+        if include_images:
+            for image in payload["images"]:
+                content.append(image_part(image))
     return content
 
 
@@ -221,6 +236,14 @@ The PPT has three columns: level, problem and cause. Put the answer in `cause`, 
 """
 
 
+IMAGE_EVIDENCE_SYSTEM_PROMPT = """
+你是汽车电子质量8D报告的现场证据分析助手。只分析本次提供的一个阶段、一批图片，输出单个 JSON 对象，不要 Markdown 或解释。
+返回格式必须为：
+{"observations":[{"image":"原始图片文件名","summary":"排查结论"}]}
+每一张输入图片都必须且只能有一条 observation，image 必须与输入文件名完全一致。summary 使用8D排查口径，简要说明：排查/核对的对象、图片中可直接确认的现象或验证结果、它对问题界定、原因分析、措施或验证的支持。没有可确认信息时写“该图片已纳入现场证据核对，未见可独立确认的结论。”不得虚构图片中不可见的事实。summary 中不要写文件名。
+""".strip()
+
+
 def parse_json(text: str) -> dict[str, Any]:
     cleaned = text.strip()
     if cleaned.startswith("```"):
@@ -273,12 +296,84 @@ def describe_ai_error(exc: Exception) -> str:
     return f"模型服务返回错误：{message}"
 
 
+def split_batches(items: list[Any], batch_size: int) -> list[list[Any]]:
+    """Keep image requests bounded so a large report cannot exceed gateway limits."""
+    if batch_size < 1:
+        raise ValueError("batch_size 必须大于 0。")
+    return [items[index:index + batch_size] for index in range(0, len(items), batch_size)]
+
+
+def generate_image_evidence(materials: dict[str, dict[str, Any]], api_key: str) -> dict[str, list[dict[str, str]]]:
+    """Analyze large image sets in bounded requests, retrying only the failed batch."""
+    client = OpenAI(base_url=get_api_url(), api_key=api_key, timeout=45.0, max_retries=0)
+    evidence: dict[str, list[dict[str, str]]] = {}
+    for stage, payload in materials.items():
+        batches = split_batches(list(payload["images"]), IMAGES_PER_BATCH)
+        if not batches:
+            continue
+        stage_evidence: list[dict[str, str]] = []
+        for batch_number, batch in enumerate(batches, start=1):
+            filename_text = ", ".join(image.name for image in batch)
+            batch_text = (
+                f"【{stage}】第 {batch_number}/{len(batches)} 批现场证据。\n"
+                f"文字记录：{payload['notes'] or '（无）'}\n"
+                f"本批图片文件：{filename_text}"
+            )
+            messages = [
+                {"role": "system", "content": IMAGE_EVIDENCE_SYSTEM_PROMPT},
+                {"role": "user", "content": [{"type": "text", "text": batch_text}, *(image_part(image) for image in batch)]},
+            ]
+            last_error: Exception | None = None
+            data: dict[str, Any] | None = None
+            for attempt in range(1, 3):
+                try:
+                    print(
+                        f"      [图像取证] {stage} 第 {batch_number}/{len(batches)} 批（{len(batch)} 张），"
+                        f"第 {attempt}/2 次请求…",
+                        flush=True,
+                    )
+                    response = client.chat.completions.create(model=MODEL, temperature=0.1, messages=messages)
+                    data = parse_json(response.choices[0].message.content or "")
+                    break
+                except Exception as exc:
+                    last_error = exc
+                    print(f"      [图像取证] 本批第 {attempt}/2 次失败：{describe_ai_error(exc)}", flush=True)
+            if data is None:
+                raise RuntimeError(
+                    f"{stage} 第 {batch_number}/{len(batches)} 批图片取证失败："
+                    f"{describe_ai_error(last_error or RuntimeError())}"
+                )
+            observations = {
+                str(item.get("image") or "").strip(): str(item.get("summary") or "").strip()
+                for item in data.get("observations", []) if isinstance(item, dict)
+            }
+            for image in batch:
+                stage_evidence.append({
+                    "image": image.name,
+                    "summary": observations.get(image.name) or "该图片已纳入现场证据核对，未见可独立确认的结论。",
+                })
+        evidence[stage] = stage_evidence
+    return evidence
+
+
 def generate_content(materials: dict[str, dict[str, Any]], api_key: str) -> dict[str, Any]:
     client = OpenAI(base_url=get_api_url(), api_key=api_key, timeout=45.0, max_retries=0)
     started = time.monotonic()
+    image_count = sum(len(payload["images"]) for payload in materials.values())
+    if image_count <= MAX_IMAGES_PER_DIRECT_REQUEST:
+        print(f"      [模型] 共 {image_count} 张图片，使用单次图文生成模式。", flush=True)
+        prompt = build_prompt(materials)
+    else:
+        print(
+            f"      [模型] 共 {image_count} 张图片，切换为分批取证模式（每批最多 {IMAGES_PER_BATCH} 张）…",
+            flush=True,
+        )
+        image_evidence = generate_image_evidence(materials, api_key)
+        print("      [模型] 图片分批取证完成，正在根据文字和取证结论汇总生成报告…", flush=True)
+        prompt = build_prompt(materials, include_images=False, image_evidence=image_evidence)
     messages = [
         {"role": "system", "content": SYSTEM_PROMPT},
-        {"role": "user", "content": build_prompt(materials)},
+        {"role": "user", "content": prompt},
     ]
     last_error: Exception | None = None
     for attempt in range(1, 3):
