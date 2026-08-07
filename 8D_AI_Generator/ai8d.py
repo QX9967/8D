@@ -310,7 +310,7 @@ def split_batches(items: list[Any], batch_size: int) -> list[list[Any]]:
 
 def generate_image_evidence(materials: dict[str, dict[str, Any]], api_key: str) -> dict[str, list[dict[str, str]]]:
     """Analyze large image sets in bounded requests, retrying only the failed batch."""
-    client = OpenAI(base_url=get_api_url(), api_key=api_key, timeout=45.0, max_retries=0)
+    client = OpenAI(base_url=get_api_url(), api_key=api_key, timeout=120.0, max_retries=0)
     evidence: dict[str, list[dict[str, str]]] = {}
     for stage, payload in materials.items():
         batches = split_batches(list(payload["images"]), IMAGES_PER_BATCH)
@@ -330,11 +330,11 @@ def generate_image_evidence(materials: dict[str, dict[str, Any]], api_key: str) 
             ]
             last_error: Exception | None = None
             data: dict[str, Any] | None = None
-            for attempt in range(1, 3):
+            for attempt in range(1, 4):
                 try:
                     print(
                         f"      [图像取证] {stage} 第 {batch_number}/{len(batches)} 批（{len(batch)} 张），"
-                        f"第 {attempt}/2 次请求…",
+                        f"第 {attempt}/3 次请求…",
                         flush=True,
                     )
                     response = client.chat.completions.create(model=MODEL, temperature=0.1, messages=messages)
@@ -342,7 +342,11 @@ def generate_image_evidence(materials: dict[str, dict[str, Any]], api_key: str) 
                     break
                 except Exception as exc:
                     last_error = exc
-                    print(f"      [图像取证] 本批第 {attempt}/2 次失败：{describe_ai_error(exc)}", flush=True)
+                    print(f"      [图像取证] 本批第 {attempt}/3 次失败：{describe_ai_error(exc)}", flush=True)
+                    if attempt < 3:
+                        wait = 3 * attempt
+                        print(f"      [图像取证] 等待 {wait} 秒后重试…", flush=True)
+                        time.sleep(wait)
             if data is None:
                 raise RuntimeError(
                     f"{stage} 第 {batch_number}/{len(batches)} 批图片取证失败："
