@@ -24,7 +24,7 @@ from pptx.util import Inches, Pt
 API_URL_ENV = "ADAYO8D_API_URL"
 API_KEY_ENV = "ADAYO8D_API_KEY"
 DEFAULT_API_URL = "http://10.2.9.178:4000/v1"
-DEFAULT_API_KEY = ""
+DEFAULT_API_KEY = "sk-nQHNlCWBO73aAGqVwbImQfzd5NsGv4dyk4fPIAlYu1OHd79J"
 MODEL = "MiniMax-M3"
 IMAGE_EXTENSIONS = {".png", ".jpg", ".jpeg", ".bmp", ".webp"}
 MAX_IMAGE_EDGE = 1600
@@ -42,11 +42,11 @@ def get_api_url() -> str:
 
 
 def get_api_key() -> str:
-    """API Key：仅从环境变量读取，避免将凭据打入 EXE 或提交到 Git。"""
+    """API Key：优先读环境变量 ADAYO8D_API_KEY，否则用固定默认值。"""
     env_key = os.environ.get(API_KEY_ENV)
     if env_key:
         return env_key.strip()
-    raise RuntimeError(f"未设置 API Key。请设置环境变量 {API_KEY_ENV} 后重试。")
+    return DEFAULT_API_KEY
 
 
 def read_text(path: Path) -> str:
