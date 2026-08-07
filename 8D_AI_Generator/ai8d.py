@@ -357,7 +357,7 @@ def generate_image_evidence(materials: dict[str, dict[str, Any]], api_key: str) 
 
 
 def generate_content(materials: dict[str, dict[str, Any]], api_key: str) -> dict[str, Any]:
-    client = OpenAI(base_url=get_api_url(), api_key=api_key, timeout=45.0, max_retries=0)
+    client = OpenAI(base_url=get_api_url(), api_key=api_key, timeout=300.0, max_retries=2)
     started = time.monotonic()
     image_count = sum(len(payload["images"]) for payload in materials.values())
     if image_count <= MAX_IMAGES_PER_DIRECT_REQUEST:
@@ -375,20 +375,16 @@ def generate_content(materials: dict[str, dict[str, Any]], api_key: str) -> dict
         {"role": "system", "content": SYSTEM_PROMPT},
         {"role": "user", "content": prompt},
     ]
-    last_error: Exception | None = None
-    for attempt in range(1, 3):
-        try:
-            print(f"      [模型] 第 {attempt}/2 次请求：正在连接并提交材料（单次最多等待 45 秒）…", flush=True)
-            response = client.chat.completions.create(model=MODEL, temperature=0.1, messages=messages)
-            raw = response.choices[0].message.content or ""
-            print(f"      [模型] 已收到回复（{time.monotonic() - started:.1f} 秒），正在校验内容…", flush=True)
-            data = parse_json(raw)
-            print("      [模型] 内容校验成功。", flush=True)
-            return data
-        except Exception as exc:
-            last_error = exc
-            print(f"      [模型] 第 {attempt}/2 次请求失败：{describe_ai_error(exc)}", flush=True)
-    raise RuntimeError(f"模型生成失败（已尝试 2 次，耗时 {time.monotonic() - started:.1f} 秒）：{describe_ai_error(last_error or RuntimeError())}")
+    try:
+        print("      [模型] 正在连接并提交材料（单次最多等待 300 秒，超时自动重试 2 次）…", flush=True)
+        response = client.chat.completions.create(model=MODEL, temperature=0.1, messages=messages)
+        raw = response.choices[0].message.content or ""
+        print(f"      [模型] 已收到回复（{time.monotonic() - started:.1f} 秒），正在校验内容…", flush=True)
+        data = parse_json(raw)
+        print("      [模型] 内容校验成功。", flush=True)
+        return data
+    except Exception as exc:
+        raise RuntimeError(f"AI 调用失败（已自动重试，超时 300 秒）：{describe_ai_error(exc)}") from exc
 
 
 def generate_title_from_ppt(report: Path, api_key: str) -> str:
@@ -401,7 +397,7 @@ def generate_title_from_ppt(report: Path, api_key: str) -> str:
                 parts.append(shape.text.strip())
             if shape.has_table:
                 parts.extend(cell.text.strip() for row in shape.table.rows for cell in row.cells if cell.text.strip())
-    client = OpenAI(base_url=get_api_url(), api_key=api_key, timeout=60.0, max_retries=2)
+    client = OpenAI(base_url=get_api_url(), api_key=api_key, timeout=120.0, max_retries=2)
     started = time.monotonic()
     print("      [标题] 正在发送完整报告摘要给模型…", flush=True)
     try:
@@ -420,9 +416,25 @@ def generate_title_from_ppt(report: Path, api_key: str) -> str:
         raise RuntimeError(describe_ai_error(exc)) from exc
 
 
+def locate_cover_slide(presentation: Presentation) -> int:
+    """Locate the cover slide after tokens have been replaced ({{Content}} no longer exists)."""
+    labels = ("编制", "审核", "批准")
+    for index, slide in enumerate(presentation.slides):
+        texts: list[str] = []
+        for shape in slide.shapes:
+            if shape.has_text_frame:
+                texts.append(shape.text)
+            if shape.has_table:
+                texts.extend(cell.text for row in shape.table.rows for cell in row.cells)
+        source = re.sub(r"\s+", "", "".join(texts))
+        if all(label in source for label in labels):
+            return index
+    raise ValueError("模板无法唯一定位 cover 页面（找不到含 编制/审核/批准 的页面）。")
+
+
 def write_cover_title(report: Path, title: str) -> None:
     presentation = Presentation(str(report))
-    cover = presentation.slides[locate_template_slides(presentation)["cover"]]
+    cover = presentation.slides[locate_cover_slide(presentation)]
     for shape in cover.shapes:
         replace_tokens(shape, {"{{Content}}": title})
     presentation.save(str(report))
