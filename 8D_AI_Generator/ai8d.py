@@ -10,6 +10,7 @@ import json
 import os
 import re
 import sys
+import time
 from pathlib import Path
 from typing import Any
 
@@ -259,9 +260,24 @@ def content_warnings(data: dict[str, Any]) -> list[str]:
     return missing
 
 
+def describe_ai_error(exc: Exception) -> str:
+    """Turn common provider failures into user-actionable console messages."""
+    message = str(exc)
+    lowered = message.lower()
+    if "401" in message or "403" in message or "api key" in lowered or "authentication" in lowered:
+        return "API Key 无效或没有访问权限。请检查 ADAYO8D_API_KEY。"
+    if "timeout" in lowered or "timed out" in lowered:
+        return "模型响应超时。请检查网络或稍后重试。"
+    if "connection" in lowered or "connect" in lowered or "dns" in lowered:
+        return "无法连接模型服务。请检查 ADAYO8D_API_URL、网络和服务状态。"
+    return f"模型服务返回错误：{message}"
+
+
 def generate_content(materials: dict[str, dict[str, Any]], api_key: str) -> dict[str, Any]:
     client = OpenAI(base_url=get_api_url(), api_key=api_key, timeout=90.0, max_retries=2)
+    started = time.monotonic()
     try:
+        print("      [模型] 正在连接服务并提交材料…", flush=True)
         response = client.chat.completions.create(
             model=MODEL,
             temperature=0.1,
@@ -270,9 +286,13 @@ def generate_content(materials: dict[str, dict[str, Any]], api_key: str) -> dict
                 {"role": "user", "content": build_prompt(materials)},
             ],
         )
-        return parse_json(response.choices[0].message.content or "")
+        raw = response.choices[0].message.content or ""
+        print(f"      [模型] 已收到回复（{time.monotonic() - started:.1f} 秒），正在校验内容…", flush=True)
+        data = parse_json(raw)
+        print("      [模型] 内容校验成功。", flush=True)
+        return data
     except Exception as exc:
-        raise RuntimeError(f"AI 调用失败（已自动重试，超时 90 秒）：{exc}") from exc
+        raise RuntimeError(f"模型生成失败（已自动重试，耗时 {time.monotonic() - started:.1f} 秒）：{describe_ai_error(exc)}") from exc
 
 
 def generate_title_from_ppt(report: Path, api_key: str) -> str:
@@ -286,15 +306,22 @@ def generate_title_from_ppt(report: Path, api_key: str) -> str:
             if shape.has_table:
                 parts.extend(cell.text.strip() for row in shape.table.rows for cell in row.cells if cell.text.strip())
     client = OpenAI(base_url=get_api_url(), api_key=api_key, timeout=60.0, max_retries=2)
-    response = client.chat.completions.create(
-        model=MODEL,
-        temperature=0.1,
-        messages=[
-            {"role": "system", "content": "你是汽车质量8D报告编辑。根据完整报告内容生成正式中文标题。只输出标题，不加引号、序号或解释；不超过28个汉字。"},
-            {"role": "user", "content": "\n".join(parts)[:12000]},
-        ],
-    )
-    return (response.choices[0].message.content or "").strip().strip('“”"')[:40]
+    started = time.monotonic()
+    print("      [标题] 正在发送完整报告摘要给模型…", flush=True)
+    try:
+        response = client.chat.completions.create(
+            model=MODEL,
+            temperature=0.1,
+            messages=[
+                {"role": "system", "content": "你是汽车质量8D报告编辑。根据完整报告内容生成正式中文标题。只输出标题，不加引号、序号或解释；不超过28个汉字。"},
+                {"role": "user", "content": "\n".join(parts)[:12000]},
+            ],
+        )
+        title = (response.choices[0].message.content or "").strip().strip('“”"')[:40]
+        print(f"      [标题] 模型返回成功（{time.monotonic() - started:.1f} 秒）。", flush=True)
+        return title
+    except Exception as exc:
+        raise RuntimeError(describe_ai_error(exc)) from exc
 
 
 def write_cover_title(report: Path, title: str) -> None:
@@ -865,7 +892,8 @@ def main() -> int:
 
         if not args.template.exists():
             raise FileNotFoundError(f"内置模板不存在：{args.template}")
-        print("[1/4] 正在读取 00-08（或 D0-D8）材料...")
+        print("\n========== 8D 报告生成进度 ==========")
+        print("[1/5] 正在读取 00-08（或 D0-D8）材料...")
         materials = collect_materials(args.materials)
         found = sum(len(item["images"]) for item in materials.values())
         if found == 0:
@@ -873,17 +901,17 @@ def main() -> int:
         stage_counts = ", ".join(f"{stage[:2]}={len(item['images'])}" for stage, item in materials.items())
         print(f"      已发现 {found} 张图片：{stage_counts}")
         if args.draft_json:
-            print("[2/4] 正在读取本地 AI 草稿...")
+            print("[2/5] 正在读取本地 AI 草稿（跳过模型生成）...")
             data = json.loads(args.draft_json.read_text(encoding="utf-8"))
         else:
-            print("[2/4] 正在上传图片并由 MiniMax 生成 8D 内容；图片较多时此步骤需要等待...")
+            print("[2/5] 正在请求模型生成 8D 内容（模型会自动重试，最长等待 90 秒）...")
             data = generate_content(materials, get_api_key())
-            print("[3/4] AI 内容已返回，正在保存 AI 草稿...")
+            print("[3/5] 模型生成成功，正在保存 AI 草稿...")
             args.output.with_suffix(".json").write_text(json.dumps(data, ensure_ascii=False, indent=2), encoding="utf-8")
         warnings = content_warnings(data)
         if warnings:
             print("提示：" + "；".join(warnings) + "。已保留空白字段供人工补充。")
-        print("[4/4] 正在写入表格、文字并插入图片，请稍候...")
+        print("[4/5] 正在写入表格、文字并插入图片，请稍候...")
         fill_template(args.template, args.output, data, materials)
         try:
             print("[5/5] 正在基于完整 PPT 生成报告标题...")
@@ -893,7 +921,8 @@ def main() -> int:
                 print(f"      已写入标题：{title}")
         except Exception as exc:
             print(f"提示：PPT 已生成，但标题生成失败：{exc}")
-        print(f"已生成可编辑 PPT：{args.output.resolve()}")
+        print(f"完成：已生成可编辑 PPT：{args.output.resolve()}")
+        print("====================================")
         return 0
     except Exception as exc:
         print(f"生成失败：{exc}")
