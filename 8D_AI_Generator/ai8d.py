@@ -561,6 +561,12 @@ def plan_image_pages(images: list[Path], plans: list[dict[str, Any]], default_su
     used: set[str] = set()
     result: list[dict[str, Any]] = []
     maximum = {"single": 1, "two": 2, "three": 3, "four": 4}
+    fallback_summary = str(default_summary or "").strip() or "相关现场证据见图。"
+    summary_by_image: dict[str, str] = {}
+    for plan in plans:
+        summary = str(plan.get("summary") or "").strip() or fallback_summary
+        for name in plan.get("images", []):
+            summary_by_image.setdefault(name, summary)
 
     # A user-provided N-M name is an explicit pagination instruction.  Do this
     # before reading the model plan so a model's "single" layout cannot split
@@ -575,7 +581,8 @@ def plan_image_pages(images: list[Path], plans: list[dict[str, Any]], default_su
         if len(bucket) > 4:
             raise ValueError(f"图片组 {prefix}- 包含 {len(bucket)} 张图片；每页最多支持 4 张。")
         used.update(image.name for image in bucket)
-        result.append({"images": bucket, "title": "证据材料", "summary": default_summary})
+        summaries = list(dict.fromkeys(summary_by_image.get(image.name, fallback_summary) for image in bucket))
+        result.append({"images": bucket, "title": "证据材料", "summary": "；".join(summaries)})
 
     for plan in plans:
         layout = str(plan.get("layout", "single")).lower()
@@ -586,11 +593,11 @@ def plan_image_pages(images: list[Path], plans: list[dict[str, Any]], default_su
         while selected:
             group, selected = selected[:limit], selected[limit:]
             used.update(image.name for image in group)
-            result.append({"images": group, "title": text(plan.get("title")), "summary": text(plan.get("summary") or default_summary)})
+            result.append({"images": group, "title": text(plan.get("title")), "summary": text(plan.get("summary") or fallback_summary)})
 
     for image in images:
         if image.name not in used:
-            result.append({"images": [image], "title": "证据材料", "summary": default_summary})
+            result.append({"images": [image], "title": "证据材料", "summary": summary_by_image.get(image.name, fallback_summary)})
 
     return result
 
