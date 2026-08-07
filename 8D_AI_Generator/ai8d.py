@@ -274,25 +274,26 @@ def describe_ai_error(exc: Exception) -> str:
 
 
 def generate_content(materials: dict[str, dict[str, Any]], api_key: str) -> dict[str, Any]:
-    client = OpenAI(base_url=get_api_url(), api_key=api_key, timeout=90.0, max_retries=2)
+    client = OpenAI(base_url=get_api_url(), api_key=api_key, timeout=45.0, max_retries=0)
     started = time.monotonic()
-    try:
-        print("      [模型] 正在连接服务并提交材料…", flush=True)
-        response = client.chat.completions.create(
-            model=MODEL,
-            temperature=0.1,
-            messages=[
-                {"role": "system", "content": SYSTEM_PROMPT},
-                {"role": "user", "content": build_prompt(materials)},
-            ],
-        )
-        raw = response.choices[0].message.content or ""
-        print(f"      [模型] 已收到回复（{time.monotonic() - started:.1f} 秒），正在校验内容…", flush=True)
-        data = parse_json(raw)
-        print("      [模型] 内容校验成功。", flush=True)
-        return data
-    except Exception as exc:
-        raise RuntimeError(f"模型生成失败（已自动重试，耗时 {time.monotonic() - started:.1f} 秒）：{describe_ai_error(exc)}") from exc
+    messages = [
+        {"role": "system", "content": SYSTEM_PROMPT},
+        {"role": "user", "content": build_prompt(materials)},
+    ]
+    last_error: Exception | None = None
+    for attempt in range(1, 3):
+        try:
+            print(f"      [模型] 第 {attempt}/2 次请求：正在连接并提交材料（单次最多等待 45 秒）…", flush=True)
+            response = client.chat.completions.create(model=MODEL, temperature=0.1, messages=messages)
+            raw = response.choices[0].message.content or ""
+            print(f"      [模型] 已收到回复（{time.monotonic() - started:.1f} 秒），正在校验内容…", flush=True)
+            data = parse_json(raw)
+            print("      [模型] 内容校验成功。", flush=True)
+            return data
+        except Exception as exc:
+            last_error = exc
+            print(f"      [模型] 第 {attempt}/2 次请求失败：{describe_ai_error(exc)}", flush=True)
+    raise RuntimeError(f"模型生成失败（已尝试 2 次，耗时 {time.monotonic() - started:.1f} 秒）：{describe_ai_error(last_error or RuntimeError())}")
 
 
 def generate_title_from_ppt(report: Path, api_key: str) -> str:
