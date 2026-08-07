@@ -423,21 +423,29 @@ def generate_title_from_ppt(report: Path, api_key: str) -> str:
                 parts.extend(cell.text.strip() for row in shape.table.rows for cell in row.cells if cell.text.strip())
     client = make_openai_client(api_key, 120.0)
     started = time.monotonic()
-    print("      [标题] 正在发送完整报告摘要给模型…", flush=True)
-    try:
-        response = client.chat.completions.create(
-            model=MODEL,
-            temperature=0.1,
-            messages=[
-                {"role": "system", "content": "你是汽车质量8D报告编辑。根据完整报告内容生成正式中文标题。只输出标题，不加引号、序号或解释；不超过28个汉字。"},
-                {"role": "user", "content": "\n".join(parts)[:12000]},
-            ],
-        )
-        title = (response.choices[0].message.content or "").strip().strip('“”"')[:40]
-        print(f"      [标题] 模型返回成功（{time.monotonic() - started:.1f} 秒）。", flush=True)
-        return title
-    except Exception as exc:
-        raise RuntimeError(describe_ai_error(exc)) from exc
+    last_error: Exception | None = None
+    for attempt in range(1, 4):
+        try:
+            print(f"      [标题] 正在发送完整报告摘要给模型（第 {attempt}/3 次请求）…", flush=True)
+            response = client.chat.completions.create(
+                model=MODEL,
+                temperature=0.1,
+                messages=[
+                    {"role": "system", "content": "你是汽车质量8D报告编辑。根据完整报告内容生成正式中文标题。只输出标题，不加引号、序号或解释；不超过28个汉字。"},
+                    {"role": "user", "content": "\n".join(parts)[:12000]},
+                ],
+            )
+            title = (response.choices[0].message.content or "").strip().strip('"')[:40]
+            print(f"      [标题] 模型返回成功（{time.monotonic() - started:.1f} 秒）。", flush=True)
+            return title
+        except Exception as exc:
+            last_error = exc
+            print(f"      [标题] 第 {attempt}/3 次失败：{describe_ai_error(exc)}", flush=True)
+            if attempt < 3:
+                wait = 3 * attempt
+                print(f"      [标题] 等待 {wait} 秒后重试…", flush=True)
+                time.sleep(wait)
+    raise RuntimeError(describe_ai_error(last_error or RuntimeError())) from (last_error or None)
 
 
 def locate_cover_slide(presentation: Presentation) -> int:
