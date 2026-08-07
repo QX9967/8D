@@ -581,8 +581,8 @@ def plan_image_pages(images: list[Path], plans: list[dict[str, Any]], default_su
         if len(bucket) > 4:
             raise ValueError(f"图片组 {prefix}- 包含 {len(bucket)} 张图片；每页最多支持 4 张。")
         used.update(image.name for image in bucket)
-        summaries = list(dict.fromkeys(summary_by_image.get(image.name, fallback_summary) for image in bucket))
-        result.append({"images": bucket, "title": "证据材料", "summary": "；".join(summaries)})
+        image_summaries = [summary_by_image.get(image.name, fallback_summary) for image in bucket]
+        result.append({"images": bucket, "title": "证据材料", "summary": "；".join(dict.fromkeys(image_summaries)), "image_summaries": image_summaries})
 
     for plan in plans:
         layout = str(plan.get("layout", "single")).lower()
@@ -593,11 +593,13 @@ def plan_image_pages(images: list[Path], plans: list[dict[str, Any]], default_su
         while selected:
             group, selected = selected[:limit], selected[limit:]
             used.update(image.name for image in group)
-            result.append({"images": group, "title": text(plan.get("title")), "summary": text(plan.get("summary") or fallback_summary)})
+            summary = text(plan.get("summary") or fallback_summary)
+            result.append({"images": group, "title": text(plan.get("title")), "summary": summary, "image_summaries": [summary] * len(group)})
 
     for image in images:
         if image.name not in used:
-            result.append({"images": [image], "title": "证据材料", "summary": summary_by_image.get(image.name, fallback_summary)})
+            summary = summary_by_image.get(image.name, fallback_summary)
+            result.append({"images": [image], "title": "证据材料", "summary": summary, "image_summaries": [summary]})
 
     return result
 
@@ -616,7 +618,11 @@ def insert_evidence_pages(presentation: Presentation, source_index: int, stage: 
         for shape in list(slide.shapes):
             if shape.has_table or shape.name == "AI_DYNAMIC" or (shape.has_text_frame and "{{Content}}" in shape.text):
                 remove_shape(shape)
-        body = page["summary"].strip()
+        image_summaries = page.get("image_summaries", [])
+        if len(page["images"]) > 1 and len(image_summaries) == len(page["images"]):
+            body = "；".join(f"图{index}：{summary}" for index, summary in enumerate(image_summaries, start=1))
+        else:
+            body = page["summary"].strip()
         if body.startswith("小结"):
             caption = body
         else:
@@ -627,7 +633,7 @@ def insert_evidence_pages(presentation: Presentation, source_index: int, stage: 
         caption = re.sub(r"\s{2,}", " ", caption).strip()
         if not caption.startswith("小结"):
             caption = f"小结：{caption}" if caption else "小结："
-        add_text(slide, caption, 0.55, 5.03, 8.90, 0.25)
+        add_text(slide, caption, 0.55, 4.82 if len(page["images"]) > 1 else 5.03, 8.90, 0.55 if len(page["images"]) > 1 else 0.25, size=8 if len(page["images"]) > 1 else 10)
         for image, slot in zip(page["images"], image_slots(len(page["images"]))):
             crop_picture(slide, image, *slot)
         if before_source:

@@ -13,6 +13,7 @@ class Ai8DTests(unittest.TestCase):
         pages = ai8d.plan_image_pages(images, [{"images": ["1-1.png"], "summary": "第一张证据"}], "")
         self.assertEqual([[item.name for item in page["images"]] for page in pages], [["1-1.png", "1-2.png"], ["2-1.png"]])
         self.assertEqual(pages[0]["summary"], "第一张证据；相关现场证据见图。")
+        self.assertEqual(pages[0]["image_summaries"], ["第一张证据", "相关现场证据见图。"])
 
     def test_clear_targets_is_recursive_and_restricted_to_stage_folders(self):
         with tempfile.TemporaryDirectory() as raw:
