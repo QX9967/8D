@@ -1,4 +1,5 @@
 @echo off
+chcp 65001 >nul
 setlocal
 set "PYTHON=python"
 %PYTHON% -m pip install -r requirements.txt

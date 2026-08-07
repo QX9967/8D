@@ -260,7 +260,7 @@ def content_warnings(data: dict[str, Any]) -> list[str]:
 
 
 def generate_content(materials: dict[str, dict[str, Any]], api_key: str) -> dict[str, Any]:
-    client = OpenAI(base_url=get_api_url(), api_key=api_key, timeout=90.0, max_retries=2)
+    client = OpenAI(base_url=get_api_url(), api_key=api_key, timeout=300.0, max_retries=2)
     try:
         response = client.chat.completions.create(
             model=MODEL,
@@ -272,7 +272,7 @@ def generate_content(materials: dict[str, dict[str, Any]], api_key: str) -> dict
         )
         return parse_json(response.choices[0].message.content or "")
     except Exception as exc:
-        raise RuntimeError(f"AI 调用失败（已自动重试，超时 90 秒）：{exc}") from exc
+        raise RuntimeError(f"AI 调用失败（已自动重试，超时 300 秒）：{exc}") from exc
 
 
 def generate_title_from_ppt(report: Path, api_key: str) -> str:
@@ -285,7 +285,7 @@ def generate_title_from_ppt(report: Path, api_key: str) -> str:
                 parts.append(shape.text.strip())
             if shape.has_table:
                 parts.extend(cell.text.strip() for row in shape.table.rows for cell in row.cells if cell.text.strip())
-    client = OpenAI(base_url=get_api_url(), api_key=api_key, timeout=60.0, max_retries=2)
+    client = OpenAI(base_url=get_api_url(), api_key=api_key, timeout=120.0, max_retries=2)
     response = client.chat.completions.create(
         model=MODEL,
         temperature=0.1,
@@ -297,9 +297,25 @@ def generate_title_from_ppt(report: Path, api_key: str) -> str:
     return (response.choices[0].message.content or "").strip().strip('“”"')[:40]
 
 
+def locate_cover_slide(presentation: Presentation) -> int:
+    """Locate the cover slide after tokens have been replaced ({{Content}} no longer exists)."""
+    labels = ("编制", "审核", "批准")
+    for index, slide in enumerate(presentation.slides):
+        texts: list[str] = []
+        for shape in slide.shapes:
+            if shape.has_text_frame:
+                texts.append(shape.text)
+            if shape.has_table:
+                texts.extend(cell.text for row in shape.table.rows for cell in row.cells)
+        source = re.sub(r"\s+", "", "".join(texts))
+        if all(label in source for label in labels):
+            return index
+    raise ValueError("模板无法唯一定位 cover 页面（找不到含 编制/审核/批准 的页面）。")
+
+
 def write_cover_title(report: Path, title: str) -> None:
     presentation = Presentation(str(report))
-    cover = presentation.slides[locate_template_slides(presentation)["cover"]]
+    cover = presentation.slides[locate_cover_slide(presentation)]
     for shape in cover.shapes:
         replace_tokens(shape, {"{{Content}}": title})
     presentation.save(str(report))
