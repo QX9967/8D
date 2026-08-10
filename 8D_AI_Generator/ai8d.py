@@ -128,13 +128,13 @@ def clear_folders(path: Path) -> int:
 def confirm_clear(path: Path) -> bool:
     count = len(clear_targets(path))
     if not count:
-        print("D0-D8 文件夹中没有可清空的文件。")
+        print("D0-D8 文件夹中没有可清空的内容，无需清理。")
         return False
-    answer = input(f"将递归删除 D0-D8 文件夹中的 {count} 个文件，确认继续？(y/N): ").strip().lower()
+    answer = input(f"将删除 D0-D8 文件夹中 {count} 个文件，操作不可撤销，确认继续？(y/N): ").strip().lower()
     return answer in {"y", "yes"}
 
 
-def pause(message: str = "\nPress Enter to close...") -> None:
+def pause(message: str = "\n按回车键退出…") -> None:
     if getattr(sys, "frozen", False):
         try:
             input(message)
@@ -143,20 +143,22 @@ def pause(message: str = "\nPress Enter to close...") -> None:
 
 
 def interactive_menu() -> int:
-    print("=" * 40)
-    print("  Adayo 8D AI 报告生成器")
-    print("  1. 生成 8D PPT 报告")
+    print()
+    print("========================================")
+    print("  Adayo 8D AI 报告生成器  v1.0")
+    print("------------------------------------------")
+    print("  1. 生成 8D 报告（PPT）")
     print("  2. 清空 D0-D8 材料文件夹")
     print("  q. 退出")
-    print("=" * 40)
-    choice = input("请选择 (1/2/q): ").strip().lower()
+    print("========================================")
+    choice = input("请选择功能（1=生成报告，2=清空材料，q=退出）：").strip().lower()
     if choice == "1":
         return 1
     if choice == "2":
         return 2
     if choice == "q":
         return 0
-    print("无效选项，请输入 1、2 或 q。")
+    print("输入有误，请重新输入 1、2 或 q。")
     return interactive_menu()
 
 
@@ -301,16 +303,28 @@ def content_warnings(data: dict[str, Any]) -> list[str]:
 
 
 def describe_ai_error(exc: Exception) -> str:
-    """Turn common provider failures into user-actionable console messages."""
+    """Turn provider failures into user-actionable, locatable messages."""
     message = str(exc)
     lowered = message.lower()
+    if "insufficient" in lowered or "balance" in lowered or "402" in message:
+        return f"账户余额不足（HTTP 402）——{message}"
     if "401" in message or "403" in message or "api key" in lowered or "authentication" in lowered:
-        return "API Key 无效或没有访问权限。请检查 ADAYO8D_API_KEY。"
-    if "timeout" in lowered or "timed out" in lowered:
-        return "模型响应超时。请检查网络或稍后重试。"
-    if "connection" in lowered or "connect" in lowered or "dns" in lowered:
-        return "无法连接模型服务。请检查 ADAYO8D_API_URL、网络和服务状态。"
-    return f"模型服务返回错误：{message}"
+        return f"API Key 无效或没有访问权限（HTTP 401/403）——{message}"
+    if "404" in message:
+        return f"模型名称或接口路径不存在（HTTP 404）——{message}"
+    if "429" in message or "rate" in lowered or "quota" in lowered:
+        return f"请求被限流（HTTP 429）——{message}"
+    if "timeout" in lowered or "timed out" in lowered or "timedout" in lowered:
+        return f"模型响应超时（客户端超时）——{message}"
+    if "502" in message:
+        return f"上游网关不可用（HTTP 502），通常为内网代理/网关问题——{message}"
+    if "500" in message or "internal" in lowered or "upstream" in lowered or "do_request_failed" in lowered:
+        return f"模型服务内部错误（HTTP 500），上游 MiniMax 服务异常——{message}"
+    if "connection" in lowered or "connect" in lowered or "dns" in lowered or "resolve" in lowered:
+        return f"无法连接模型服务（网络/DNS 问题），请检查 ADAYO8D_API_URL 与网络——{message}"
+    if "ssl" in lowered or "certificate" in lowered:
+        return f"SSL/TLS 证书错误——{message}"
+    return f"模型服务返回错误——{message}"
 
 
 def split_batches(items: list[Any], batch_size: int) -> list[list[Any]]:
@@ -345,8 +359,8 @@ def generate_image_evidence(materials: dict[str, dict[str, Any]], api_key: str) 
             for attempt in range(1, 4):
                 try:
                     print(
-                        f"      [图像取证] {stage} 第 {batch_number}/{len(batches)} 批（{len(batch)} 张），"
-                        f"第 {attempt}/3 次请求…",
+                        f"        · {stage} 证据识别 第 {batch_number}/{len(batches)} 批（{len(batch)} 张），"
+                        f"第 {attempt}/3 次…",
                         flush=True,
                     )
                     response = client.chat.completions.create(model=MODEL, temperature=0.1, messages=messages)
@@ -354,14 +368,14 @@ def generate_image_evidence(materials: dict[str, dict[str, Any]], api_key: str) 
                     break
                 except Exception as exc:
                     last_error = exc
-                    print(f"      [图像取证] 本批第 {attempt}/3 次失败：{describe_ai_error(exc)}", flush=True)
+                    print(f"        · {stage} 第 {batch_number} 批 第 {attempt}/3 次失败：{describe_ai_error(exc)}", flush=True)
                     if attempt < 3:
                         wait = 3 * attempt
-                        print(f"      [图像取证] 等待 {wait} 秒后重试…", flush=True)
+                        print(f"          等待 {wait} 秒后重试…", flush=True)
                         time.sleep(wait)
             if data is None:
                 raise RuntimeError(
-                    f"{stage} 第 {batch_number}/{len(batches)} 批图片取证失败："
+                    f"{stage} 第 {batch_number}/{len(batches)} 批图片证据识别失败："
                     f"{describe_ai_error(last_error or RuntimeError())}"
                 )
             observations = {
@@ -383,29 +397,29 @@ def generate_content(materials: dict[str, dict[str, Any]], api_key: str) -> dict
     image_count = sum(len(payload["images"]) for payload in materials.values())
     image_evidence: dict[str, list[dict[str, str]]] = {}
     if image_count <= MAX_IMAGES_PER_DIRECT_REQUEST:
-        print(f"      [模型] 共 {image_count} 张图片，使用单次图文生成模式。", flush=True)
+        print(f"        · 共 {image_count} 张图片，一次性提交生成。", flush=True)
         prompt = build_prompt(materials)
     else:
         print(
-            f"      [模型] 共 {image_count} 张图片，切换为分批取证模式（每批最多 {IMAGES_PER_BATCH} 张）…",
+            f"        · 共 {image_count} 张图片，采用分批证据识别（每批最多 {IMAGES_PER_BATCH} 张）。",
             flush=True,
         )
         image_evidence = generate_image_evidence(materials, api_key)
-        print("      [模型] 图片分批取证完成，正在根据文字和取证结论汇总生成报告…", flush=True)
+        print("        · 证据识别完成，正在汇总生成报告。", flush=True)
         prompt = build_prompt(materials, include_images=False, image_evidence=image_evidence)
     messages = [
         {"role": "system", "content": SYSTEM_PROMPT},
         {"role": "user", "content": prompt},
     ]
     try:
-        print("      [模型] 正在连接并提交材料（单次最多等待 300 秒，超时自动重试 2 次）…", flush=True)
+        print("        · 正在连接模型并提交材料（单次最多等待 300 秒，超时自动重试 2 次）。", flush=True)
         response = client.chat.completions.create(model=MODEL, temperature=0.1, messages=messages)
         raw = response.choices[0].message.content or ""
-        print(f"      [模型] 已收到回复（{time.monotonic() - started:.1f} 秒），正在校验内容…", flush=True)
+        print(f"        · 已收到模型回复（耗时 {time.monotonic() - started:.1f} 秒），正在校验内容。", flush=True)
         data = parse_json(raw)
         if image_evidence:
             data["_image_evidence"] = image_evidence
-        print("      [模型] 内容校验成功。", flush=True)
+        print("        · 内容校验通过。", flush=True)
         return data
     except Exception as exc:
         raise RuntimeError(f"AI 调用失败（已自动重试，超时 300 秒）：{describe_ai_error(exc)}") from exc
@@ -426,7 +440,7 @@ def generate_title_from_ppt(report: Path, api_key: str) -> str:
     last_error: Exception | None = None
     for attempt in range(1, 4):
         try:
-            print(f"      [标题] 正在发送完整报告摘要给模型（第 {attempt}/3 次请求）…", flush=True)
+            print(f"        · 正在提炼报告标题（第 {attempt}/3 次）。", flush=True)
             response = client.chat.completions.create(
                 model=MODEL,
                 temperature=0.1,
@@ -436,14 +450,14 @@ def generate_title_from_ppt(report: Path, api_key: str) -> str:
                 ],
             )
             title = (response.choices[0].message.content or "").strip().strip('"')[:40]
-            print(f"      [标题] 模型返回成功（{time.monotonic() - started:.1f} 秒）。", flush=True)
+            print(f"        · 标题生成成功（耗时 {time.monotonic() - started:.1f} 秒）。", flush=True)
             return title
         except Exception as exc:
             last_error = exc
-            print(f"      [标题] 第 {attempt}/3 次失败：{describe_ai_error(exc)}", flush=True)
+            print(f"        · 第 {attempt}/3 次失败：{describe_ai_error(exc)}", flush=True)
             if attempt < 3:
                 wait = 3 * attempt
-                print(f"      [标题] 等待 {wait} 秒后重试…", flush=True)
+                print(f"          等待 {wait} 秒后重试…", flush=True)
                 time.sleep(wait)
     raise RuntimeError(describe_ai_error(last_error or RuntimeError())) from (last_error or None)
 
@@ -856,7 +870,7 @@ def resolve_output_path(desired: Path) -> Path:
     parent = desired.parent
     timestamp = time.strftime("%Y%m%d_%H%M%S")
     fallback = parent / f"{stem}_{timestamp}{suffix}"
-    print(f"提示：{desired.name} 文件被占用，将保存为：{fallback.name}")
+    print(f"提示：{desired.name} 正被占用（可能 PowerPoint 中已打开），将改名为 {fallback.name} 后保存。")
     return fallback
 
 
@@ -1068,7 +1082,7 @@ def main() -> int:
             if not args.yes and not confirm_clear(root):
                 return 0
             n = clear_folders(root)
-            print(f"已清空 {n} 个文件。")
+            print(f"已清理 {n} 个文件，D0-D8 文件夹已就绪。")
             pause()
             return 0
 
@@ -1082,7 +1096,7 @@ def main() -> int:
                     if not confirm_clear(executable_folder()):
                         continue
                     n = clear_folders(executable_folder())
-                    print(f"已清空 {n} 个文件。")
+                    print(f"已清理 {n} 个文件，D0-D8 文件夹已就绪。")
                     pause()
                     return 0
                 # choice == 1: generate PPT
@@ -1097,43 +1111,79 @@ def main() -> int:
                 args.output = executable_folder() / "8D报告_AI生成.pptx"
 
         if not args.template.exists():
-            raise FileNotFoundError(f"内置模板不存在：{args.template}")
-        print("\n========== 8D 报告生成进度 ==========")
-        print("[1/5] 正在读取 00-08（或 D0-D8）材料...")
+            raise FileNotFoundError(f"内置模板缺失：{args.template}（EXE 应与 8D模板.pptx 同目录，或通过 --template 指定）")
+        print("\n========================================")
+        print("  正在为您生成 8D 报告，请稍候…")
+        print("========================================")
+        print()
+        print("步骤 1/5：读取 D0-D8 材料文件夹…")
         materials = collect_materials(args.materials)
         found = sum(len(item["images"]) for item in materials.values())
         if found == 0:
-            raise FileNotFoundError("未找到 00-08 或 D0-D8 文件夹中的图片材料。")
+            raise FileNotFoundError(
+                f"在 {args.materials} 中未找到 D0-D8（或 00-08）子文件夹及其中的图片。"
+                "请将材料放入 EXE 同级目录的 D0-D8 子文件夹后重试。"
+            )
         stage_counts = ", ".join(f"{stage[:2]}={len(item['images'])}" for stage, item in materials.items())
-        print(f"      已发现 {found} 张图片：{stage_counts}")
+        print(f"        已发现 {found} 张图片：{stage_counts}")
         if args.draft_json:
-            print("[2/5] 正在读取本地 AI 草稿（跳过模型生成）...")
-            data = json.loads(args.draft_json.read_text(encoding="utf-8"))
+            print()
+            print("步骤 2/5：读取本地 AI 草稿（跳过模型调用）…")
+            try:
+                data = json.loads(args.draft_json.read_text(encoding="utf-8"))
+            except json.JSONDecodeError as exc:
+                raise ValueError(f"草稿文件 {args.draft_json} 不是有效 JSON：{exc}") from exc
         else:
-            print("[2/5] 正在请求模型生成 8D 内容（模型会自动重试，最长等待 90 秒）...")
-            data = generate_content(materials, get_api_key())
-            print("[3/5] 模型生成成功，正在保存 AI 草稿...")
-            json_path = resolve_output_path(args.output.with_suffix(".json"))
-            json_path.write_text(json.dumps(data, ensure_ascii=False, indent=2), encoding="utf-8")
+            print()
+            print("步骤 2/5：调用 AI 模型生成 8D 内容（自动重试，单次最长 90 秒）…")
+            try:
+                data = generate_content(materials, get_api_key())
+            except Exception as exc:
+                raise RuntimeError(f"模型生成阶段失败：{exc}") from exc
+            print()
+            print("步骤 3/5：模型生成完成，正在保存 AI 草稿…")
+            try:
+                json_path = resolve_output_path(args.output.with_suffix(".json"))
+                json_path.write_text(json.dumps(data, ensure_ascii=False, indent=2), encoding="utf-8")
+            except OSError as exc:
+                print(f"提示：草稿 JSON 保存失败，但 PPT 仍会继续生成。{exc}")
         warnings = content_warnings(data)
         if warnings:
-            print("提示：" + "；".join(warnings) + "。已保留空白字段供人工补充。")
-        print("[4/5] 正在写入表格、文字并插入图片，请稍候...")
-        actual_output = resolve_output_path(args.output)
-        fill_template(args.template, actual_output, data, materials)
+            print(f"提示：模型未填齐以下字段，已保留空白供人工补充——{'；'.join(warnings)}。")
+        print()
+        print("步骤 4/5：正在写入表格、文字并插入图片…")
         try:
-            print("[5/5] 正在基于完整 PPT 生成报告标题...")
+            actual_output = resolve_output_path(args.output)
+            fill_template(args.template, actual_output, data, materials)
+        except ValueError as exc:
+            raise ValueError(f"模板填写阶段失败，请检查 8D模板.pptx 是否与本 EXE 兼容：{exc}") from exc
+        except Exception as exc:
+            raise RuntimeError(f"PPT 生成失败：{type(exc).__name__}：{exc}") from exc
+        try:
+            print()
+            print("步骤 5/5：基于完整 PPT 提炼报告标题…")
             title = generate_title_from_ppt(actual_output, get_api_key())
             if title:
                 write_cover_title(actual_output, title)
-                print(f"      已写入标题：{title}")
+                print(f"        封面标题：{title}")
         except Exception as exc:
-            print(f"提示：PPT 已生成，但标题生成失败：{exc}")
-        print(f"完成：已生成可编辑 PPT：{actual_output.resolve()}")
-        print("====================================")
+            print(f"提示：PPT 已生成，但封面标题自动生成失败（不影响正文）：{exc}")
+        print()
+        print("========================================")
+        print(f"  完成 ✓ 8D报告已生成：{actual_output.resolve()}")
+        print("========================================")
         return 0
+    except FileNotFoundError as exc:
+        print(f"\n[材料缺失] {exc}")
+        return 1
+    except ValueError as exc:
+        print(f"\n[配置/模板错误] {exc}")
+        return 1
+    except RuntimeError as exc:
+        print(f"\n[生成失败] {exc}")
+        return 1
     except Exception as exc:
-        print(f"生成失败：{exc}")
+        print(f"\n[未预期错误] {type(exc).__name__}：{exc}")
         return 1
     finally:
         if auto_mode or getattr(sys, "frozen", False):
