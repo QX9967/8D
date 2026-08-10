@@ -499,12 +499,16 @@ def write_cover_title(report: Path, title: str) -> None:
     except ValueError:
         return
     cover = presentation.slides[cover_index]
-    for shape in cover.shapes:
-        if shape.name == "AI_COVER_TITLE":
-            shape.text = title
-            break
+    title_shape = next((shape for shape in cover.shapes if shape.name == "AI_COVER_TITLE"), None)
+    if title_shape is not None:
+        title_shape.text = title
     else:
-        replace_tokens(cover.shapes[0], {"{{Content}}": title})
+        for shape in cover.shapes:
+            if shape.has_text_frame and "{{Content}}" in shape.text:
+                replace_tokens(shape, {"{{Content}}": title})
+                break
+        else:
+            replace_tokens(cover.shapes[0], {"{{Content}}": title})
     presentation.save(str(report))
 
 
@@ -906,10 +910,14 @@ def fill_template(template: Path, output: Path, data: dict[str, Any], materials:
     ])
     # The title still supports {{Content}}, while cover approvals can also be ordinary
     # labels such as "编制：" after a customer has customized the template.
+    # When the model returns no title, keep the {{Content}} marker untouched so the
+    # later AI title pass (write_cover_title) can still fill it in.
+    cover_title = cover.get("title", "")
     for shape in slide.shapes:
         if shape.has_text_frame and "{{Content}}" in shape.text:
             shape.name = "AI_COVER_TITLE"
-        replace_tokens(shape, {"{{Content}}": cover.get("title", "")})
+        if cover_title:
+            replace_tokens(shape, {"{{Content}}": cover_title})
         if not shape.has_text_frame:
             continue
         label_values = (("编制", cover.get("prepared_by")), ("审核", cover.get("reviewed_by")),
