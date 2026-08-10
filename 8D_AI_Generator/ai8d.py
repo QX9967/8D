@@ -411,18 +411,32 @@ def generate_content(materials: dict[str, dict[str, Any]], api_key: str) -> dict
         {"role": "system", "content": SYSTEM_PROMPT},
         {"role": "user", "content": prompt},
     ]
-    try:
-        print("        · 正在连接模型并提交材料（单次最多等待 300 秒，超时自动重试 2 次）。", flush=True)
-        response = client.chat.completions.create(model=MODEL, temperature=0.1, messages=messages)
-        raw = response.choices[0].message.content or ""
-        print(f"        · 已收到模型回复（耗时 {time.monotonic() - started:.1f} 秒），正在校验内容。", flush=True)
-        data = parse_json(raw)
-        if image_evidence:
-            data["_image_evidence"] = image_evidence
-        print("        · 内容校验通过。", flush=True)
-        return data
-    except Exception as exc:
-        raise RuntimeError(f"AI 调用失败（已自动重试，超时 300 秒）：{describe_ai_error(exc)}") from exc
+    last_error: Exception | None = None
+    for attempt in range(1, 4):
+        try:
+            print(
+                f"        · 正在连接模型并提交材料（第 {attempt}/3 次，单次最多等待 300 秒，"
+                f"超时自动重试 2 次）。",
+                flush=True,
+            )
+            response = client.chat.completions.create(model=MODEL, temperature=0.1, messages=messages)
+            raw = response.choices[0].message.content or ""
+            print(f"        · 已收到模型回复（耗时 {time.monotonic() - started:.1f} 秒），正在校验内容。", flush=True)
+            data = parse_json(raw)
+            if image_evidence:
+                data["_image_evidence"] = image_evidence
+            print("        · 内容校验通过。", flush=True)
+            return data
+        except Exception as exc:
+            last_error = exc
+            print(f"        · 第 {attempt}/3 次失败：{describe_ai_error(exc)}", flush=True)
+            if attempt < 3:
+                wait = 3 * attempt
+                print(f"          等待 {wait} 秒后重试…", flush=True)
+                time.sleep(wait)
+    raise RuntimeError(
+        f"AI 调用失败（已自动重试 2 次，单次超时 300 秒）：{describe_ai_error(last_error or RuntimeError())}"
+    ) from (last_error or None)
 
 
 def generate_title_from_ppt(report: Path, api_key: str) -> str:
