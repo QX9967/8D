@@ -860,11 +860,17 @@ def resolve_output_path(desired: Path) -> Path:
     return fallback
 
 
+def _stage(data: dict[str, Any], key: str) -> dict[str, Any]:
+    value = data.get(key, {})
+    return value if isinstance(value, dict) else {}
+
+
 def fill_template(template: Path, output: Path, data: dict[str, Any], materials: dict[str, dict[str, Any]]) -> None:
     presentation = Presentation(str(template))
     pages = locate_template_slides(presentation)
 
-    cover, d1 = data["cover"], data["d1"]
+    cover = _stage(data, "cover")
+    d1 = _stage(data, "d1")
     slide = presentation.slides[pages["cover"]]
     replace_content_placeholders(slide, [
         cover.get("prepared_by"), cover.get("reviewed_by"),
@@ -891,7 +897,7 @@ def fill_template(template: Path, output: Path, data: dict[str, Any], materials:
                     break
 
     # D0 问题了解：按模板中五个 {{content}} 直接写入 AI 返回字段。
-    d0 = data.get("d0", {})
+    d0 = _stage(data, "d0")
     replace_content_placeholders(presentation.slides[pages["d0"]], [
         d0.get("fault_date"), d0.get("model"), d0.get("trace_code"),
         d0.get("station"), d0.get("description"),
@@ -913,7 +919,7 @@ def fill_template(template: Path, output: Path, data: dict[str, Any], materials:
     # 故意不写 slide 5 的任何内容。
 
     # Fill the two D4 5WHY tables from model-generated occurrence and escape reason chains.
-    d4 = data.get("d4", {})
+    d4 = _stage(data, "d4")
     def reason_chain(kind: str) -> list[tuple[str, str]]:
         """Return the problem-and-cause pair for every individual WHY row."""
         direct = d4.get(f"{kind}_why", {})
@@ -947,7 +953,7 @@ def fill_template(template: Path, output: Path, data: dict[str, Any], materials:
         put_cell(escape_table, row_index, 2, cause)
 
     d5_shape = first_table(presentation.slides[pages["d5"]])
-    d5_countermeasures = usable_records(data["d5"].get("countermeasures", []), "action")
+    d5_countermeasures = usable_records(_stage(data, "d5").get("countermeasures", []), "action")
     expand_team_table(d5_shape, len(d5_countermeasures), presentation.slide_height)
     d5_table = d5_shape.table
     for row_index in range(1, len(d5_table.rows)):
@@ -961,7 +967,7 @@ def fill_template(template: Path, output: Path, data: dict[str, Any], materials:
         put_cell(d5_table, row_index, 4, item.get("status") or "进行中")
 
     d6_shape = first_table(presentation.slides[pages["d6"]])
-    validations = usable_records(data["d6"].get("validations", []), "method")
+    validations = usable_records(_stage(data, "d6").get("validations", []), "method")
     expand_team_table(d6_shape, len(validations), presentation.slide_height)
     d6_table = d6_shape.table
     for row_index in range(1, len(d6_table.rows)):
@@ -975,9 +981,9 @@ def fill_template(template: Path, output: Path, data: dict[str, Any], materials:
         put_cell(d6_table, row_index, 4, item.get("date"))
 
     # D7 预防措施：优先用模型生成的 D7 数据，无数据时回退关键词匹配。
-    d7_data = data.get("d7", {})
+    d7_data = _stage(data, "d7")
     d7_table = first_table(presentation.slides[pages["d7"]]).table
-    model_preventions = d7_data.get("preventions", []) if isinstance(d7_data, dict) else []
+    model_preventions = d7_data.get("preventions", [])
     if len(model_preventions or []) >= 1 and any(
         isinstance(p, dict) and str(p.get("verdict") or "").strip() == "是"
         for p in (model_preventions or [])
@@ -999,7 +1005,7 @@ def fill_template(template: Path, output: Path, data: dict[str, Any], materials:
         # owner / date / status 留空待人工填写。
 
     # D8 结案总结：四个独立 {{content}} 直接对应 AI 的四个结案字段。
-    d8 = data.get("d8", {})
+    d8 = _stage(data, "d8")
     d8_values = [
         d8.get("background"), d8.get("current_status"),
         d8.get("system_strategy"), d8.get("strategy_logic"),
@@ -1023,7 +1029,9 @@ def fill_template(template: Path, output: Path, data: dict[str, Any], materials:
         ("D2 问题描述", "d2", pages["d2"]),
     )
     page_data = data.get("image_pages", {})
-    batch_evidence = data.get("_image_evidence", {})
+    if not isinstance(page_data, dict):
+        page_data = {}
+    batch_evidence = _stage(data, "_image_evidence")
     for stage, key, source_index in stage_sources:
         images = materials[stage]["images"]
         if images:
@@ -1037,7 +1045,7 @@ def fill_template(template: Path, output: Path, data: dict[str, Any], materials:
                     if any(image_summaries) and len(set(image_summaries)) > 1:
                         p["summary"] = "；".join(image_summaries)
                         p["image_summaries"] = image_summaries
-            pages = plan_image_pages(images, stage_pages, data.get(key, {}).get("evidence_summary", ""))
+            pages = plan_image_pages(images, stage_pages, _stage(data, key).get("evidence_summary", ""))
             insert_evidence_pages(presentation, source_index, stage, pages, images=images)
 
     output.parent.mkdir(parents=True, exist_ok=True)
