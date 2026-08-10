@@ -863,7 +863,7 @@ def insert_evidence_pages(presentation: Presentation, source_index: int, stage: 
             if normalized in seen_summaries:
                 caption = f"{caption}（第{page_number}页）"
         seen_summaries.append(caption.strip())
-        add_text(slide, caption, 0.55, 4.82 if len(page["images"]) > 1 else 5.03, 8.90, 0.55 if len(page["images"]) > 1 else 0.25, size=8 if len(page["images"]) > 1 else 10)
+        add_text(slide, caption, 0.55, 4.82 if len(page["images"]) > 1 else 5.03, 8.90, 0.55 if len(page["images"]) > 1 else 0.25, size=10)
         for image, slot in zip(page["images"], image_slots(len(page["images"]))):
             crop_picture(slide, image, *slot)
         if before_source:
