@@ -26,8 +26,8 @@ from pptx.util import Inches, Pt
 API_URL_ENV = "ADAYO8D_API_URL"
 API_KEY_ENV = "ADAYO8D_API_KEY"
 DEFAULT_API_URL = "http://10.2.9.178:4000/v1"
-DEFAULT_API_KEY = "sk-nQHNlCWBO73aAGqVwbImQfzd5NsGv4dyk4fPIAlYu1OHd79J"
-MODEL = "MiniMax-M3"
+DEFAULT_API_KEY = "sk-uv3BgYBLFgJ4JNFGB1FKHzfSHDQd1fYjpYP1tlKObPQo3Nmf"
+MODEL = "Qwen3.6-35B-A3B"
 IMAGE_EXTENSIONS = {".png", ".jpg", ".jpeg", ".bmp", ".webp"}
 MAX_IMAGE_EDGE = 1600
 JPEG_QUALITY = 85
