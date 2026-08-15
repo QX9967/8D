@@ -31,8 +31,10 @@ MODEL = "MiniMax-M3"
 IMAGE_EXTENSIONS = {".png", ".jpg", ".jpeg", ".bmp", ".webp"}
 MAX_IMAGE_EDGE = 1600
 JPEG_QUALITY = 85
-MAX_IMAGES_PER_DIRECT_REQUEST = 12
-IMAGES_PER_BATCH = 10
+IMAGES_PER_BATCH = 4
+AI_REQUEST_TIMEOUT = 105.0
+AI_MAX_ATTEMPTS = 2
+MAX_NOTES_CHARS_PER_STAGE = 8000
 STAGE_CODES = ("d0", "d1", "d2", "d3", "d4", "d5", "d6", "d7", "d8")
 STAGE_NAMES = [
     "D0 相关信息", "D1 团队成立", "D2 问题描述", "D3 临时措施", "D4 原因分析",
@@ -334,9 +336,139 @@ def split_batches(items: list[Any], batch_size: int) -> list[list[Any]]:
     return [items[index:index + batch_size] for index in range(0, len(items), batch_size)]
 
 
+def is_retryable_ai_error(exc: Exception) -> bool:
+    """Retry only failures which can plausibly succeed on the next short request."""
+    message = str(exc).lower()
+    permanent_markers = ("401", "402", "403", "404", "api key", "authentication", "balance", "insufficient")
+    return not any(marker in message for marker in permanent_markers)
+
+
+def request_json(client: OpenAI, messages: list[dict[str, Any]], label: str) -> dict[str, Any]:
+    """Run one bounded JSON request without the SDK's hidden automatic retries."""
+    last_error: Exception | None = None
+    for attempt in range(1, AI_MAX_ATTEMPTS + 1):
+        try:
+            print(f"        · {label}（第 {attempt}/{AI_MAX_ATTEMPTS} 次）…", flush=True)
+            response = client.chat.completions.create(model=MODEL, temperature=0.1, messages=messages)
+            return parse_json(response.choices[0].message.content or "")
+        except Exception as exc:
+            last_error = exc
+            print(f"          失败：{describe_ai_error(exc)}", flush=True)
+            if attempt >= AI_MAX_ATTEMPTS or not is_retryable_ai_error(exc):
+                break
+            wait = 3 * attempt
+            print(f"          等待 {wait} 秒后只重试当前小段…", flush=True)
+            time.sleep(wait)
+    raise RuntimeError(f"{label}失败：{describe_ai_error(last_error or RuntimeError())}") from last_error
+
+
+def clipped_notes(notes: Any) -> str:
+    """Bound a single stage's text while preserving both the beginning and the conclusion."""
+    value = str(notes or "").strip()
+    if len(value) <= MAX_NOTES_CHARS_PER_STAGE:
+        return value or "（无）"
+    half = MAX_NOTES_CHARS_PER_STAGE // 2
+    return f"{value[:half]}\n\n……（材料过长，中间内容已截断）……\n\n{value[-half:]}"
+
+
+def stage_code(stage_name: str) -> str:
+    match = re.match(r"\s*[dD]([0-8])", stage_name)
+    if not match:
+        raise ValueError(f"无法识别材料阶段：{stage_name}")
+    return f"d{match.group(1)}"
+
+
+def build_stage_material_text(
+    materials: dict[str, dict[str, Any]],
+    codes: tuple[str, ...],
+    image_evidence: dict[str, list[dict[str, str]]],
+) -> str:
+    sections: list[str] = []
+    for stage, payload in materials.items():
+        if stage_code(stage) not in codes:
+            continue
+        observations = image_evidence.get(stage, [])
+        evidence_text = "\n".join(
+            f"- {item['summary']}" for item in observations if str(item.get("summary") or "").strip()
+        ) or "（无）"
+        sections.append(
+            f"【{stage}】\n文字记录：\n{clipped_notes(payload.get('notes'))}\n"
+            f"图片证据识别结论：\n{evidence_text}"
+        )
+    return "\n\n".join(sections) or "（本组无材料）"
+
+
+REPORT_BASE_PROMPT = """
+你是汽车电子质量8D报告助手。请立即输出一个紧凑的 JSON 对象，不要 Markdown、解释或思考过程。
+只能依据提供的文字和图片识别结论；不得编造日期、数据、人员或责任人。未提供的事实字段留空字符串。
+使用正式、简洁的中文。summary 不超过40字，evidence_summary 不包含图片文件名。
+""".strip()
+
+
+REPORT_GROUPS: tuple[tuple[tuple[str, ...], str], ...] = (
+    (("d0", "d1", "d2", "d3"), """
+只返回 cover、d0、d1、d2、d3 五个根键，结构如下：
+{"cover":{"title":"","prepared_by":"","reviewed_by":"","approved_by":"","date":""},
+"d0":{"fault_date":"","model":"","trace_code":"","station":"","description":"","summary":"","evidence_summary":""},
+"d1":{"team":[{"name":"","role":"","duty":"","contact":"","module":""}],"summary":"","evidence_summary":""},
+"d2":{"customer":"","date":"","supplier":"","model":"","vehicle_model":"","material":"","quantity":"","failure_type":"","lot":"","location":"","production_date":"","vin":"","complaint_source":"","symptom":"","confirmed_symptom":"","summary":"","evidence_summary":""},
+"d3":{"actions":[],"summary":"待确认","evidence_summary":""}}
+D0 按材料填写。D1 最多6人，role 保持组长/组员。按模板要求，D2 的明细字段全部留空，只填写 summary 和 evidence_summary。D3 actions 必须为空且 summary 为“待确认”。
+""".strip()),
+    (("d4",), """
+只返回 d4 根键。必须输出 occurrence_why_rows 的 Why1至Why5五行，以及 escape_why_rows 的 Why1至Why3三行；每行均含 level、problem、cause。
+第一行 problem 是原始故障，后续 problem 是上一行 cause，形成连续原因链。cause 是原因答案，不是问题复述。还要返回 root_cause、escape_cause、summary、evidence_summary。
+结构：{"d4":{"occurrence_why_rows":[{"level":"Why1","problem":"","cause":""}],"escape_why_rows":[{"level":"Why1","problem":"","cause":""}],"root_cause":"","escape_cause":"","summary":"","evidence_summary":""}}
+""".strip()),
+    (("d5", "d6", "d7"), """
+只返回 d5、d6、d7 三个根键。D5 countermeasures 按 action/owner/date/status 输出4至5条，status 默认“进行中”，并覆盖程序文件、FMEA、控制计划、SOP、经验教训库。D6 validations 按 method/result/owner/date 输出。D7 preventions 每项含 item/verdict/comment，verdict 只能是“是”或“否”，否时 comment 写“NA”。
+结构：{"d5":{"countermeasures":[{"action":"","owner":"","date":"","status":""}],"summary":"","evidence_summary":""},"d6":{"validations":[{"method":"","result":"","owner":"","date":""}],"summary":"","evidence_summary":""},"d7":{"preventions":[{"item":"","verdict":"","comment":""}],"summary":"","evidence_summary":""}}
+""".strip()),
+    (("d8",), """
+只返回 d8 根键。background、current_status、system_strategy、strategy_logic 必须分别独立写2至3句；conclusion 不少于500个中文字符，并与前述8D内容一致。另返回 summary、evidence_summary。
+结构：{"d8":{"background":"","current_status":"","system_strategy":"","strategy_logic":"","conclusion":"","summary":"","evidence_summary":""}}
+""".strip()),
+)
+
+
+def empty_report() -> dict[str, Any]:
+    """Return a complete, PPT-compatible result before section responses are merged."""
+    return {
+        "cover": {"title": "", "prepared_by": "", "reviewed_by": "", "approved_by": "", "date": ""},
+        "d0": {"fault_date": "", "model": "", "trace_code": "", "station": "", "description": "", "summary": "", "evidence_summary": ""},
+        "d1": {"team": [], "summary": "", "evidence_summary": ""},
+        "d2": {key: "" for key in ("customer", "date", "supplier", "model", "vehicle_model", "material", "quantity", "failure_type", "lot", "location", "production_date", "vin", "complaint_source", "symptom", "confirmed_symptom", "summary", "evidence_summary")},
+        "d3": {"actions": [], "summary": "待确认", "evidence_summary": ""},
+        "d4": {"occurrence_why_rows": [], "escape_why_rows": [], "root_cause": "", "escape_cause": "", "summary": "", "evidence_summary": ""},
+        "d5": {"countermeasures": [], "summary": "", "evidence_summary": ""},
+        "d6": {"validations": [], "summary": "", "evidence_summary": ""},
+        "d7": {"preventions": [], "summary": "", "evidence_summary": ""},
+        "d8": {"background": "", "current_status": "", "system_strategy": "", "strategy_logic": "", "conclusion": "", "summary": "", "evidence_summary": ""},
+    }
+
+
+def build_image_pages(
+    materials: dict[str, dict[str, Any]], image_evidence: dict[str, list[dict[str, str]]]
+) -> dict[str, list[dict[str, Any]]]:
+    """Create deterministic page plans; final layout grouping remains local in plan_image_pages."""
+    result: dict[str, list[dict[str, Any]]] = {code: [] for code in ("d2", "d4", "d5", "d6", "d7", "d8")}
+    for stage in materials:
+        code = stage_code(stage)
+        if code not in result:
+            continue
+        for item in image_evidence.get(stage, []):
+            result[code].append({
+                "title": "证据材料",
+                "summary": item.get("summary") or "相关现场证据已纳入核对。",
+                "layout": "single",
+                "images": [item.get("image", "")],
+            })
+    return result
+
+
 def generate_image_evidence(materials: dict[str, dict[str, Any]], api_key: str) -> dict[str, list[dict[str, str]]]:
-    """Analyze large image sets in bounded requests, retrying only the failed batch."""
-    client = make_openai_client(api_key, 120.0)
+    """Analyze every image in small requests; one failed batch no longer kills the report."""
+    client = make_openai_client(api_key, AI_REQUEST_TIMEOUT)
     evidence: dict[str, list[dict[str, str]]] = {}
     for stage, payload in materials.items():
         batches = split_batches(list(payload["images"]), IMAGES_PER_BATCH)
@@ -347,37 +479,24 @@ def generate_image_evidence(materials: dict[str, dict[str, Any]], api_key: str) 
             filename_text = ", ".join(image.name for image in batch)
             batch_text = (
                 f"【{stage}】第 {batch_number}/{len(batches)} 批现场证据。\n"
-                f"文字记录：{payload['notes'] or '（无）'}\n"
+                f"文字记录：{clipped_notes(payload.get('notes'))}\n"
                 f"本批图片文件：{filename_text}"
             )
             messages = [
                 {"role": "system", "content": IMAGE_EVIDENCE_SYSTEM_PROMPT},
                 {"role": "user", "content": [{"type": "text", "text": batch_text}, *(image_part(image) for image in batch)]},
             ]
-            last_error: Exception | None = None
-            data: dict[str, Any] | None = None
-            for attempt in range(1, 4):
-                try:
-                    print(
-                        f"        · {stage} 证据识别 第 {batch_number}/{len(batches)} 批（{len(batch)} 张），"
-                        f"第 {attempt}/3 次…",
-                        flush=True,
-                    )
-                    response = client.chat.completions.create(model=MODEL, temperature=0.1, messages=messages)
-                    data = parse_json(response.choices[0].message.content or "")
-                    break
-                except Exception as exc:
-                    last_error = exc
-                    print(f"        · {stage} 第 {batch_number} 批 第 {attempt}/3 次失败：{describe_ai_error(exc)}", flush=True)
-                    if attempt < 3:
-                        wait = 3 * attempt
-                        print(f"          等待 {wait} 秒后重试…", flush=True)
-                        time.sleep(wait)
-            if data is None:
-                raise RuntimeError(
-                    f"{stage} 第 {batch_number}/{len(batches)} 批图片证据识别失败："
-                    f"{describe_ai_error(last_error or RuntimeError())}"
+            try:
+                data = request_json(
+                    client,
+                    messages,
+                    f"{stage} 证据识别 第 {batch_number}/{len(batches)} 批（{len(batch)} 张）",
                 )
+            except Exception as exc:
+                if not is_retryable_ai_error(exc):
+                    raise
+                print("          本批识图超时，使用保守说明继续生成报告。", flush=True)
+                data = {"observations": []}
             observations = {
                 str(item.get("image") or "").strip(): str(item.get("summary") or "").strip()
                 for item in data.get("observations", []) if isinstance(item, dict)
@@ -392,51 +511,46 @@ def generate_image_evidence(materials: dict[str, dict[str, Any]], api_key: str) 
 
 
 def generate_content(materials: dict[str, dict[str, Any]], api_key: str) -> dict[str, Any]:
-    client = make_openai_client(api_key, 300.0)
+    """Generate the report in four bounded, sequential sections below the gateway timeout."""
+    client = make_openai_client(api_key, AI_REQUEST_TIMEOUT)
     started = time.monotonic()
     image_count = sum(len(payload["images"]) for payload in materials.values())
-    image_evidence: dict[str, list[dict[str, str]]] = {}
-    if image_count <= MAX_IMAGES_PER_DIRECT_REQUEST:
-        print(f"        · 共 {image_count} 张图片，一次性提交生成。", flush=True)
-        prompt = build_prompt(materials)
-    else:
-        print(
-            f"        · 共 {image_count} 张图片，采用分批证据识别（每批最多 {IMAGES_PER_BATCH} 张）。",
-            flush=True,
+    print(
+        f"        · 共 {image_count} 张图片，始终采用小批识别（每批最多 {IMAGES_PER_BATCH} 张）。",
+        flush=True,
+    )
+    image_evidence = generate_image_evidence(materials, api_key)
+    print("        · 图片识别完成，按 D0-D3、D4、D5-D7、D8 四段生成。", flush=True)
+
+    data = empty_report()
+    for group_number, (codes, instructions) in enumerate(REPORT_GROUPS, start=1):
+        prior_context = ""
+        if group_number > 1:
+            completed_codes = [f"d{index}" for index in range(0, int(codes[0][1]))]
+            context = {key: data[key] for key in completed_codes if key in data}
+            prior_context = f"\n\n已完成阶段上下文（只用于保持逻辑一致）：\n{json.dumps(context, ensure_ascii=False)}"
+        user_text = (
+            f"请完成第 {group_number}/{len(REPORT_GROUPS)} 段。\n\n"
+            f"本段材料：\n{build_stage_material_text(materials, codes, image_evidence)}"
+            f"{prior_context}"
         )
-        image_evidence = generate_image_evidence(materials, api_key)
-        print("        · 证据识别完成，正在汇总生成报告。", flush=True)
-        prompt = build_prompt(materials, include_images=False, image_evidence=image_evidence)
-    messages = [
-        {"role": "system", "content": SYSTEM_PROMPT},
-        {"role": "user", "content": prompt},
-    ]
-    last_error: Exception | None = None
-    for attempt in range(1, 4):
-        try:
-            print(
-                f"        · 正在连接模型并提交材料（第 {attempt}/3 次，单次最多等待 300 秒，"
-                f"超时自动重试 2 次）。",
-                flush=True,
-            )
-            response = client.chat.completions.create(model=MODEL, temperature=0.1, messages=messages)
-            raw = response.choices[0].message.content or ""
-            print(f"        · 已收到模型回复（耗时 {time.monotonic() - started:.1f} 秒），正在校验内容。", flush=True)
-            data = parse_json(raw)
-            if image_evidence:
-                data["_image_evidence"] = image_evidence
-            print("        · 内容校验通过。", flush=True)
-            return data
-        except Exception as exc:
-            last_error = exc
-            print(f"        · 第 {attempt}/3 次失败：{describe_ai_error(exc)}", flush=True)
-            if attempt < 3:
-                wait = 3 * attempt
-                print(f"          等待 {wait} 秒后重试…", flush=True)
-                time.sleep(wait)
-    raise RuntimeError(
-        f"AI 调用失败（已自动重试 2 次，单次超时 300 秒）：{describe_ai_error(last_error or RuntimeError())}"
-    ) from (last_error or None)
+        section = request_json(
+            client,
+            [
+                {"role": "system", "content": f"{REPORT_BASE_PROMPT}\n\n{instructions}"},
+                {"role": "user", "content": user_text},
+            ],
+            f"生成第 {group_number}/{len(REPORT_GROUPS)} 段（{'/'.join(code.upper() for code in codes)}）",
+        )
+        allowed = {"cover", *codes}
+        for key in allowed:
+            if isinstance(section.get(key), dict):
+                data[key].update(section[key])
+
+    data["image_pages"] = build_image_pages(materials, image_evidence)
+    data["_image_evidence"] = image_evidence
+    print(f"        · 四段内容已合并并校验（总耗时 {time.monotonic() - started:.1f} 秒）。", flush=True)
+    return data
 
 
 def generate_title_from_ppt(report: Path, api_key: str) -> str:
@@ -1157,7 +1271,7 @@ def main() -> int:
                 raise ValueError(f"草稿文件 {args.draft_json} 不是有效 JSON：{exc}") from exc
         else:
             print()
-            print("步骤 2/5：调用 AI 模型生成 8D 内容（自动重试，单次最长 90 秒）…")
+            print("步骤 2/5：分批调用 AI 模型生成 8D 内容（单次最长 105 秒）…")
             try:
                 data = generate_content(materials, get_api_key())
             except Exception as exc:

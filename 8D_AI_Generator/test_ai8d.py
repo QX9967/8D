@@ -1,7 +1,9 @@
 import tempfile
 import unittest
 from pathlib import Path
+from unittest.mock import Mock, patch
 
+from PIL import Image
 from pptx import Presentation
 
 import ai8d
@@ -27,6 +29,41 @@ class Ai8DTests(unittest.TestCase):
         batches = ai8d.split_batches(list(range(23)), 10)
         self.assertEqual([len(batch) for batch in batches], [10, 10, 3])
         self.assertEqual(sum(batches, []), list(range(23)))
+
+    def test_generate_content_always_uses_evidence_pass_and_four_report_sections(self):
+        materials = {
+            stage: {"notes": f"{stage}文字", "images": [Path("proof.png")] if index == 4 else []}
+            for index, stage in enumerate(ai8d.STAGE_NAMES)
+        }
+        sections = [
+            {"cover": {"title": "测试"}, "d0": {}, "d1": {}, "d2": {}, "d3": {}},
+            {"d4": {"root_cause": "原因"}},
+            {"d5": {}, "d6": {}, "d7": {}},
+            {"d8": {"summary": "结案"}},
+        ]
+        evidence = {ai8d.STAGE_NAMES[4]: [{"image": "proof.png", "summary": "已核对异常状态。"}]}
+        with patch.object(ai8d, "make_openai_client", return_value=Mock()) as client_call, \
+                patch.object(ai8d, "generate_image_evidence", return_value=evidence) as evidence_call, \
+                patch.object(ai8d, "request_json", side_effect=sections) as json_call:
+            result = ai8d.generate_content(materials, "key")
+
+        client_call.assert_called_once_with("key", ai8d.AI_REQUEST_TIMEOUT)
+        evidence_call.assert_called_once_with(materials, "key")
+        self.assertEqual(json_call.call_count, 4)
+        self.assertEqual(result["d4"]["root_cause"], "原因")
+        self.assertEqual(result["image_pages"]["d4"][0]["images"], ["proof.png"])
+
+    def test_failed_image_batch_uses_conservative_evidence_and_continues(self):
+        with tempfile.TemporaryDirectory() as raw:
+            image_path = Path(raw) / "proof.png"
+            Image.new("RGB", (8, 8), "white").save(image_path)
+            materials = {"D4 原因分析": {"notes": "复核异常件", "images": [image_path]}}
+            with patch.object(ai8d, "make_openai_client", return_value=Mock()), \
+                    patch.object(ai8d, "request_json", side_effect=RuntimeError("timed out")):
+                evidence = ai8d.generate_image_evidence(materials, "key")
+
+        self.assertEqual(evidence["D4 原因分析"][0]["image"], "proof.png")
+        self.assertIn("未见可独立确认", evidence["D4 原因分析"][0]["summary"])
 
     def test_numeric_prefix_images_share_one_page(self):
         images = [Path("1-1.png"), Path("1-2.png"), Path("2-1.png")]
