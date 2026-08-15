@@ -2,6 +2,7 @@ __pycache__/
 build/
 dist/
 .build_venv/
+.build_venv38/
 build_fixed/
 dist_fixed/
 *.spec

@@ -21,13 +21,20 @@
 
 ## 本地开发与打包
 
+> **Win7 兼容性要求**：客户运行环境为 Win7 时必须用 **Python 3.8.10** 打包。Python 3.9+ 编译产物依赖
+> `api-ms-win-core-path-l1-1-0.dll`（Win8+ 才有的 API set），在 Win7 上会报“无法启动此程序，因为计算机中丢失
+> api-ms-win-core-path-l1-1-0.dll”。请使用 `build_exe.bat`（自动创建 `.build_venv38` 的 Python 3.8 环境）。
+>
+> Win7 还须安装过 Universal C Runtime 更新（KB2999226），否则会报 `api-ms-win-crt-*` 丢失。
+
 ```powershell
-python -m venv .build_venv
-.\.build_venv\Scripts\python.exe -m pip install -r requirements.txt
-.\.build_venv\Scripts\python.exe -m PyInstaller --noconfirm --clean --onefile --name Adayo8D-AI --add-data "..\8D模板.pptx;." ai8d.py
+# 手动方式（需要已安装 Python 3.8.10）
+python -m venv .build_venv38
+.\.build_venv38\Scripts\python.exe -m pip install -r requirements.txt
+.\.build_venv38\Scripts\python.exe -m PyInstaller --noconfirm --clean --onefile --name Adayo8D-AI --add-data "..\8D模板.pptx;." ai8d.py
 ```
 
-成品位于 `dist\Adayo8D-AI.exe`。图片在上传前会自动缩放至最长边 1600 px，并转换为压缩 JPEG，以降低请求大小。
+或直接双击 `build_exe.bat`（推荐）。成品位于 `dist\Adayo8D-AI.exe`。图片在上传前会自动缩放至最长边 1600 px，并转换为压缩 JPEG，以降低请求大小。
 
 ## 注意
 
