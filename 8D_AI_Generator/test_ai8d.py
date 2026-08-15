@@ -10,6 +10,22 @@ import ai8d
 
 
 class Ai8DTests(unittest.TestCase):
+    def test_parse_json_ignores_thinking_trace_and_uses_final_object(self):
+        raw = '<think>先比较 {"draft": true}，然后输出。</think>\n```json\n{"d4":{"root_cause":"装配偏差"}}\n```'
+        self.assertEqual(ai8d.parse_json(raw)["d4"]["root_cause"], "装配偏差")
+
+    def test_parse_json_prefers_known_final_object_after_incidental_braces(self):
+        raw = 'reasoning {"temporary":"value"}\n{"observations":[{"image":"a.png","summary":"已核对"}]}'
+        self.assertEqual(ai8d.parse_json(raw)["observations"][0]["image"], "a.png")
+
+    def test_parse_title_removes_complete_thinking_block(self):
+        raw = "<think>The user wants a concise title.</think>\n后视镜螺钉错用问题8D报告"
+        self.assertEqual(ai8d.parse_title(raw), "后视镜螺钉错用问题8D报告")
+
+    def test_parse_title_rejects_unfinished_thinking_block(self):
+        with self.assertRaisesRegex(ValueError, "思考过程"):
+            ai8d.parse_title("<think>The user wants me to generate a formal title")
+
     def test_large_material_prompt_uses_text_evidence_without_raw_images(self):
         materials = {
             "D4 原因分析": {

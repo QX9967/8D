@@ -261,21 +261,96 @@ IMAGE_EVIDENCE_SYSTEM_PROMPT = """
 """.strip()
 
 
-def parse_json(text: str) -> dict[str, Any]:
-    cleaned = text.strip()
-    if cleaned.startswith("```"):
-        cleaned = re.sub(r"^```(?:json)?\s*|\s*```$", "", cleaned, flags=re.S)
-    match = re.search(r"\{.*\}", cleaned, flags=re.S)
-    if not match:
-        raise ValueError("模型没有返回 JSON 对象。")
-    candidate = match.group(0)
+def strip_model_thinking(text: str) -> str:
+    """Remove reasoning blocks emitted by thinking models from visible output."""
+    return re.sub(
+        r"<(think|analysis)>.*?</\1>",
+        "",
+        text,
+        flags=re.I | re.S,
+    ).strip()
+
+
+def balanced_json_objects(text: str) -> list[str]:
+    """Return balanced top-level JSON object substrings, ignoring braces in strings."""
+    candidates: list[str] = []
+    start: int | None = None
+    depth = 0
+    in_string = False
+    escaped = False
+    for index, character in enumerate(text):
+        if in_string:
+            if escaped:
+                escaped = False
+            elif character == "\\":
+                escaped = True
+            elif character == '"':
+                in_string = False
+            continue
+        if character == '"':
+            in_string = True
+        elif character == "{":
+            if depth == 0:
+                start = index
+            depth += 1
+        elif character == "}" and depth:
+            depth -= 1
+            if depth == 0 and start is not None:
+                candidates.append(text[start:index + 1])
+                start = None
+    return candidates
+
+
+def decode_json_candidate(candidate: str) -> dict[str, Any] | None:
     try:
-        return json.loads(candidate)
+        value = json.loads(candidate)
     except json.JSONDecodeError:
-        repaired = repair_json(candidate, return_objects=True)
-        if not isinstance(repaired, dict):
-            raise ValueError("模型返回内容无法修复为 JSON 对象。")
-        return repaired
+        try:
+            value = repair_json(candidate, return_objects=True)
+        except Exception:
+            return None
+    return value if isinstance(value, dict) and value else None
+
+
+def parse_json(text: str) -> dict[str, Any]:
+    """Extract the final JSON object even when MiniMax prefixes a thinking trace."""
+    cleaned = strip_model_thinking(text.strip())
+    cleaned = re.sub(r"```(?:json)?", "", cleaned, flags=re.I).replace("```", "").strip()
+
+    # Prefer objects beginning with one of our known root keys. This also lets
+    # json-repair recover a truncated/malformed final answer without selecting
+    # an incidental object mentioned inside a reasoning trace.
+    structured_starts = list(re.finditer(
+        r'\{\s*["\'](?:cover|d[0-8]|observations)["\']\s*:', cleaned, flags=re.I
+    ))
+    for match in reversed(structured_starts):
+        end = cleaned.rfind("}")
+        candidate = cleaned[match.start():end + 1] if end >= match.start() else cleaned[match.start():]
+        decoded = decode_json_candidate(candidate)
+        if decoded is not None:
+            return decoded
+
+    for candidate in reversed(balanced_json_objects(cleaned)):
+        decoded = decode_json_candidate(candidate)
+        if decoded is not None:
+            return decoded
+    raise ValueError("模型返回内容中没有可用的 JSON 对象。")
+
+
+def parse_title(text: str) -> str:
+    """Return only the visible title and reject leaked or unfinished reasoning."""
+    cleaned = strip_model_thinking(text).strip()
+    if re.search(r"<(?:think|analysis)>|</(?:think|analysis)>", cleaned, flags=re.I):
+        raise ValueError("模型只返回了思考过程，没有返回标题。")
+    cleaned = re.sub(r"^```(?:text)?\s*|\s*```$", "", cleaned, flags=re.I | re.S).strip()
+    lines = [line.strip() for line in cleaned.splitlines() if line.strip()]
+    if not lines:
+        raise ValueError("模型没有返回标题。")
+    title = re.sub(r"^(?:标题|报告标题)\s*[：:]\s*", "", lines[-1]).strip().strip('"“”')
+    title = re.sub(r"\s+", "", title)
+    if not title or any(marker in title.lower() for marker in ("<think", "</think", "<analysis")):
+        raise ValueError("模型标题包含无效的思考标记。")
+    return title[:28]
 
 
 def content_warnings(data: dict[str, Any]) -> list[str]:
@@ -308,6 +383,8 @@ def describe_ai_error(exc: Exception) -> str:
     """Turn provider failures into user-actionable, locatable messages."""
     message = str(exc)
     lowered = message.lower()
+    if "json" in lowered or "思考过程" in message or "没有返回标题" in message:
+        return f"模型输出格式不符合要求——{message}"
     if "insufficient" in lowered or "balance" in lowered or "402" in message:
         return f"账户余额不足（HTTP 402）——{message}"
     if "401" in message or "403" in message or "api key" in lowered or "authentication" in lowered:
@@ -563,7 +640,7 @@ def generate_title_from_ppt(report: Path, api_key: str) -> str:
                 parts.append(shape.text.strip())
             if shape.has_table:
                 parts.extend(cell.text.strip() for row in shape.table.rows for cell in row.cells if cell.text.strip())
-    client = make_openai_client(api_key, 120.0)
+    client = make_openai_client(api_key, AI_REQUEST_TIMEOUT)
     started = time.monotonic()
     last_error: Exception | None = None
     for attempt in range(1, 4):
@@ -573,11 +650,11 @@ def generate_title_from_ppt(report: Path, api_key: str) -> str:
                 model=MODEL,
                 temperature=0.1,
                 messages=[
-                    {"role": "system", "content": "你是汽车质量8D报告编辑。根据完整报告内容生成正式中文标题。只输出标题，不加引号、序号或解释；不超过28个汉字。"},
+                    {"role": "system", "content": "你是汽车质量8D报告编辑。根据完整报告内容生成正式中文标题。只输出标题，不加引号、序号、解释或思考过程；禁止输出 <think> 标签；不超过28个汉字。"},
                     {"role": "user", "content": "\n".join(parts)[:12000]},
                 ],
             )
-            title = (response.choices[0].message.content or "").strip().strip('"')[:40]
+            title = parse_title(response.choices[0].message.content or "")
             print(f"        · 标题生成成功（耗时 {time.monotonic() - started:.1f} 秒）。", flush=True)
             return title
         except Exception as exc:
