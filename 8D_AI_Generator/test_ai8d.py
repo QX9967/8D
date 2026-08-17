@@ -1,6 +1,7 @@
 import tempfile
 import unittest
 from pathlib import Path
+from types import SimpleNamespace
 from unittest.mock import Mock, patch
 
 from PIL import Image
@@ -17,6 +18,21 @@ class Ai8DTests(unittest.TestCase):
     def test_parse_json_prefers_known_final_object_after_incidental_braces(self):
         raw = 'reasoning {"temporary":"value"}\n{"observations":[{"image":"a.png","summary":"已核对"}]}'
         self.assertEqual(ai8d.parse_json(raw)["observations"][0]["image"], "a.png")
+
+    def test_request_json_adds_format_correction_after_parse_failure(self):
+        client = Mock()
+        client.chat.completions.create.side_effect = [
+            SimpleNamespace(choices=[SimpleNamespace(message=SimpleNamespace(content="只有思考过程"))]),
+            SimpleNamespace(choices=[SimpleNamespace(message=SimpleNamespace(content='{"d7":{"summary":"已完成"}}'))]),
+        ]
+        messages = [{"role": "user", "content": "生成 D7"}]
+        with patch.object(ai8d.time, "sleep"):
+            result = ai8d.request_json(client, messages, "测试段")
+
+        self.assertEqual(result["d7"]["summary"], "已完成")
+        retry_messages = client.chat.completions.create.call_args_list[1].kwargs["messages"]
+        self.assertIn("第一个字符必须是 {", retry_messages[-1]["content"])
+        self.assertEqual(messages, [{"role": "user", "content": "生成 D7"}])
 
     def test_parse_title_removes_complete_thinking_block(self):
         raw = "<think>The user wants a concise title.</think>\n后视镜螺钉错用问题8D报告"
@@ -46,7 +62,7 @@ class Ai8DTests(unittest.TestCase):
         self.assertEqual([len(batch) for batch in batches], [10, 10, 3])
         self.assertEqual(sum(batches, []), list(range(23)))
 
-    def test_generate_content_always_uses_evidence_pass_and_four_report_sections(self):
+    def test_generate_content_always_uses_evidence_pass_and_six_report_sections(self):
         materials = {
             stage: {"notes": f"{stage}文字", "images": [Path("proof.png")] if index == 4 else []}
             for index, stage in enumerate(ai8d.STAGE_NAMES)
@@ -54,7 +70,9 @@ class Ai8DTests(unittest.TestCase):
         sections = [
             {"cover": {"title": "测试"}, "d0": {}, "d1": {}, "d2": {}, "d3": {}},
             {"d4": {"root_cause": "原因"}},
-            {"d5": {}, "d6": {}, "d7": {}},
+            {"d5": {}},
+            {"d6": {}},
+            {"d7": {}},
             {"d8": {"summary": "结案"}},
         ]
         evidence = {ai8d.STAGE_NAMES[4]: [{"image": "proof.png", "summary": "已核对异常状态。"}]}
@@ -65,7 +83,7 @@ class Ai8DTests(unittest.TestCase):
 
         client_call.assert_called_once_with("key", ai8d.AI_REQUEST_TIMEOUT)
         evidence_call.assert_called_once_with(materials, "key")
-        self.assertEqual(json_call.call_count, 4)
+        self.assertEqual(json_call.call_count, 6)
         self.assertEqual(result["d4"]["root_cause"], "原因")
         self.assertEqual(result["image_pages"]["d4"][0]["images"], ["proof.png"])
 

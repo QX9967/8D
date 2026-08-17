@@ -426,7 +426,20 @@ def request_json(client: OpenAI, messages: list[dict[str, Any]], label: str) -> 
     for attempt in range(1, AI_MAX_ATTEMPTS + 1):
         try:
             print(f"        · {label}（第 {attempt}/{AI_MAX_ATTEMPTS} 次）…", flush=True)
-            response = client.chat.completions.create(model=MODEL, temperature=0.1, messages=messages)
+            attempt_messages = messages
+            if attempt > 1 and isinstance(last_error, ValueError):
+                attempt_messages = [
+                    *messages,
+                    {
+                        "role": "user",
+                        "content": (
+                            "上一次响应没有形成可解析的 JSON。请重新生成完整结果：第一个字符必须是 {，"
+                            "最后一个字符必须是 }；所有键名和字符串使用英文双引号；不要输出思考过程、"
+                            "Markdown 代码块、注释或 JSON 之外的任何文字。"
+                        ),
+                    },
+                ]
+            response = client.chat.completions.create(model=MODEL, temperature=0.1, messages=attempt_messages)
             return parse_json(response.choices[0].message.content or "")
         except Exception as exc:
             last_error = exc
@@ -497,15 +510,33 @@ D0 按材料填写。D1 最多6人，role 保持组长/组员。按模板要求�
 第一行 problem 是原始故障，后续 problem 是上一行 cause，形成连续原因链。cause 是原因答案，不是问题复述。还要返回 root_cause、escape_cause、summary、evidence_summary。
 结构：{"d4":{"occurrence_why_rows":[{"level":"Why1","problem":"","cause":""}],"escape_why_rows":[{"level":"Why1","problem":"","cause":""}],"root_cause":"","escape_cause":"","summary":"","evidence_summary":""}}
 """.strip()),
-    (("d5", "d6", "d7"), """
-只返回 d5、d6、d7 三个根键。D5 countermeasures 按 action/owner/date/status 输出4至5条，status 默认“进行中”，并覆盖程序文件、FMEA、控制计划、SOP、经验教训库。D6 validations 按 method/result/owner/date 输出。D7 preventions 每项含 item/verdict/comment，verdict 只能是“是”或“否”，否时 comment 写“NA”。
-结构：{"d5":{"countermeasures":[{"action":"","owner":"","date":"","status":""}],"summary":"","evidence_summary":""},"d6":{"validations":[{"method":"","result":"","owner":"","date":""}],"summary":"","evidence_summary":""},"d7":{"preventions":[{"item":"","verdict":"","comment":""}],"summary":"","evidence_summary":""}}
+    (("d5",), """
+只返回 d5 根键。countermeasures 按 action/owner/date/status 输出4至5条，status 默认“进行中”，并覆盖程序文件、FMEA、控制计划、SOP、经验教训库。
+结构：{"d5":{"countermeasures":[{"action":"","owner":"","date":"","status":""}],"summary":"","evidence_summary":""}}
+""".strip()),
+    (("d6",), """
+只返回 d6 根键。validations 按 method/result/owner/date 输出，验证方式和结果必须与已完成的原因分析及长期对策一致。
+结构：{"d6":{"validations":[{"method":"","result":"","owner":"","date":""}],"summary":"","evidence_summary":""}}
+""".strip()),
+    (("d7",), """
+只返回 d7 根键。preventions 每项含 item/verdict/comment，item 应覆盖程序Procedure、工作指示Work instruction、操作指示SOP、流程图Flow chart、失效模式分析D/P-FMEA、控制计划Control Plan、设计规范Design disciplines、经验教训Lessons Learned；verdict 只能是“是”或“否”，否时 comment 写“NA”，是时关联具体长期对策。
+结构：{"d7":{"preventions":[{"item":"","verdict":"","comment":""}],"summary":"","evidence_summary":""}}
 """.strip()),
     (("d8",), """
 只返回 d8 根键。background、current_status、system_strategy、strategy_logic 必须分别独立写2至3句；conclusion 不少于500个中文字符，并与前述8D内容一致。另返回 summary、evidence_summary。
 结构：{"d8":{"background":"","current_status":"","system_strategy":"","strategy_logic":"","conclusion":"","summary":"","evidence_summary":""}}
 """.strip()),
 )
+
+
+REPORT_CONTEXT_CODES: dict[str, tuple[str, ...]] = {
+    "d0": (),
+    "d4": ("d0", "d2", "d3"),
+    "d5": ("d2", "d4"),
+    "d6": ("d2", "d4", "d5"),
+    "d7": ("d4", "d5", "d6"),
+    "d8": ("d0", "d2", "d4", "d5", "d6", "d7"),
+}
 
 
 def empty_report() -> dict[str, Any]:
@@ -588,7 +619,7 @@ def generate_image_evidence(materials: dict[str, dict[str, Any]], api_key: str) 
 
 
 def generate_content(materials: dict[str, dict[str, Any]], api_key: str) -> dict[str, Any]:
-    """Generate the report in four bounded, sequential sections below the gateway timeout."""
+    """Generate the report in small sequential sections below the gateway timeout."""
     client = make_openai_client(api_key, AI_REQUEST_TIMEOUT)
     started = time.monotonic()
     image_count = sum(len(payload["images"]) for payload in materials.values())
@@ -597,14 +628,14 @@ def generate_content(materials: dict[str, dict[str, Any]], api_key: str) -> dict
         flush=True,
     )
     image_evidence = generate_image_evidence(materials, api_key)
-    print("        · 图片识别完成，按 D0-D3、D4、D5-D7、D8 四段生成。", flush=True)
+    print("        · 图片识别完成，按 D0-D3、D4、D5、D6、D7、D8 六段生成。", flush=True)
 
     data = empty_report()
     for group_number, (codes, instructions) in enumerate(REPORT_GROUPS, start=1):
         prior_context = ""
-        if group_number > 1:
-            completed_codes = [f"d{index}" for index in range(0, int(codes[0][1]))]
-            context = {key: data[key] for key in completed_codes if key in data}
+        context_codes = REPORT_CONTEXT_CODES.get(codes[0], ())
+        if context_codes:
+            context = {key: data[key] for key in context_codes if key in data}
             prior_context = f"\n\n已完成阶段上下文（只用于保持逻辑一致）：\n{json.dumps(context, ensure_ascii=False)}"
         user_text = (
             f"请完成第 {group_number}/{len(REPORT_GROUPS)} 段。\n\n"
@@ -626,7 +657,7 @@ def generate_content(materials: dict[str, dict[str, Any]], api_key: str) -> dict
 
     data["image_pages"] = build_image_pages(materials, image_evidence)
     data["_image_evidence"] = image_evidence
-    print(f"        · 四段内容已合并并校验（总耗时 {time.monotonic() - started:.1f} 秒）。", flush=True)
+    print(f"        · 六段内容已合并并校验（总耗时 {time.monotonic() - started:.1f} 秒）。", flush=True)
     return data
 
 
